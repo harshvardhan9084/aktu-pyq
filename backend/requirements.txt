@@ -1,0 +1,28 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+pydantic==2.7.4
+pydantic-settings==2.3.4
+
+# PDF processing
+PyMuPDF==1.24.5
+pdfplumber==0.11.1
+pdf2image==1.17.0
+pytesseract==0.3.10
+Pillow==10.4.0
+
+# AI / NLP
+sentence-transformers==3.0.1
+scikit-learn==1.5.0
+numpy==1.26.4
+
+# Vector database (free, no API)
+chromadb==0.5.3
+
+# Database
+supabase==2.4.6
+
+# Utilities
+python-dotenv==1.0.1
+httpx==0.27.0
+aiofiles==23.2.1
