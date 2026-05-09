@@ -14,6 +14,12 @@ export default function Home() {
   const [searched, setSearched] = useState(false)
   const resultsRef = useRef<HTMLDivElement>(null)
 
+  // Speculative preloading: silently wake the Render backend the moment
+  // user lands on the page, so it's warm by the time they hit Search.
+  useEffect(() => {
+    fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/health`).catch(() => {})
+  }, [])
+
   const handleResults = (data: Question[]) => {
     setResults(data)
     setSearched(true)

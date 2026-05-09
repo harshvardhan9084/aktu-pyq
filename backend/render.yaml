@@ -3,10 +3,12 @@ services:
     name: aktu-pyq-backend
     env: python
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    pythonVersion: "3.11.9"
+    buildCommand: >
+      pip install --upgrade pip &&
+      pip install --extra-index-url https://download.pytorch.org/whl/cpu
+      -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    # System packages (tesseract, poppler) must be added in Render Dashboard
-    # Settings → Build & Deploy → "Packages" field → add: tesseract-ocr poppler-utils
     envVars:
       - key: SUPABASE_URL
         sync: false
