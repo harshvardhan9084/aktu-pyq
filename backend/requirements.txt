@@ -4,21 +4,17 @@ python-multipart==0.0.9
 pydantic==2.7.4
 pydantic-settings==2.3.4
 
-# PDF processing — all have pre-built wheels for Python 3.11
-pymupdf==1.23.26
+# PDF processing — pure Python, no compilation, works on any Python version
+pypdf==4.2.0
 pdfplumber==0.11.1
 pdf2image==1.17.0
 pytesseract==0.3.10
 Pillow==10.2.0
 
-# AI / NLP — pinned, pre-built wheels exist for Python 3.11 on Linux
+# AI / NLP
 sentence-transformers==2.7.0
 scikit-learn==1.4.2
 numpy==1.26.4
-torch==2.2.2+cpu
-transformers==4.40.2
-huggingface-hub==0.23.2
-tokenizers==0.19.1
 
 # Vector database
 chromadb==0.4.24

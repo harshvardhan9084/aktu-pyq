@@ -1,6 +1,7 @@
 """
 PDF Processing Service
-hash deduplication · digital extraction · OCR fallback · question segmentation
+Uses pypdf (pure Python, zero compilation) for text extraction.
+OCR via pytesseract — gracefully skipped if tesseract binary not installed.
 """
 
 import hashlib
@@ -8,9 +9,8 @@ import re
 import logging
 from typing import List, Tuple
 
-import fitz          # PyMuPDF
-from PIL import Image
-import pytesseract
+from pypdf import PdfReader
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -24,43 +24,37 @@ NOISE_RE = re.compile("|".join(NOISE_PATTERNS), re.IGNORECASE)
 
 
 def compute_file_hash(file_bytes: bytes) -> str:
-    """SHA-256 fingerprint — prevents duplicate papers regardless of filename."""
     return hashlib.sha256(file_bytes).hexdigest()
 
 
 def extract_text_digital(pdf_bytes: bytes) -> str:
     try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        text = "\n".join(page.get_text() for page in doc)
-        doc.close()
-        return text
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        parts = [page.extract_text() or "" for page in reader.pages]
+        return "\n".join(parts)
     except Exception as e:
-        logger.warning(f"PyMuPDF failed: {e}")
+        logger.warning(f"pypdf extraction failed: {e}")
         return ""
 
 
 def extract_text_ocr(pdf_bytes: bytes) -> str:
     try:
         import pdf2image
+        import pytesseract
         images = pdf2image.convert_from_bytes(pdf_bytes, dpi=200)
-        parts = []
-        for img in images:
-            gray = img.convert("L")
-            parts.append(pytesseract.image_to_string(gray, config="--psm 6"))
-        return "\n".join(parts)
+        return "\n".join(pytesseract.image_to_string(img.convert("L"), config="--psm 6") for img in images)
     except Exception as e:
-        logger.error(f"OCR failed: {e}")
+        logger.warning(f"OCR skipped or failed: {e}")
         return ""
 
 
 def is_scanned_pdf(pdf_bytes: bytes) -> bool:
     text = extract_text_digital(pdf_bytes)
     try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        n = len(doc); doc.close()
+        n_pages = len(PdfReader(io.BytesIO(pdf_bytes)).pages)
     except:
-        n = 1
-    return len(text.strip()) < n * 100
+        n_pages = 1
+    return len(text.strip()) < n_pages * 100
 
 
 def clean_text(text: str) -> str:
@@ -93,7 +87,8 @@ def segment_questions(text: str) -> List[str]:
                          "calculate","determine","analyze"]
         for line in text.split("\n"):
             line = line.strip()
-            if (len(line) > 30 and line[0].isupper() and not NOISE_RE.search(line)
+            if (len(line) > 30 and line[0].isupper()
+                    and not NOISE_RE.search(line)
                     and any(kw in line.lower() for kw in TRIGGER_WORDS)):
                 questions.append(line)
 
@@ -101,8 +96,7 @@ def segment_questions(text: str) -> List[str]:
     for q in questions:
         n = normalize_question(q)
         if n not in seen:
-            seen.add(n)
-            unique.append(q)
+            seen.add(n); unique.append(q)
     return unique
 
 
@@ -116,18 +110,18 @@ def extract_question_type(question: str) -> str:
 
 
 def process_pdf(pdf_bytes: bytes) -> Tuple[List[str], str, int]:
-    """Full pipeline: bytes → (questions, method, page_count)"""
     scanned = is_scanned_pdf(pdf_bytes)
     if scanned:
         text = extract_text_ocr(pdf_bytes); method = "ocr"
+        if not text.strip():
+            text = extract_text_digital(pdf_bytes); method = "digital_fallback"
     else:
         text = extract_text_digital(pdf_bytes); method = "digital"
         if len(text.strip()) < 200:
             text = extract_text_ocr(pdf_bytes); method = "ocr_fallback"
 
     try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        n_pages = len(doc); doc.close()
+        n_pages = len(PdfReader(io.BytesIO(pdf_bytes)).pages)
     except:
         n_pages = 0
 
