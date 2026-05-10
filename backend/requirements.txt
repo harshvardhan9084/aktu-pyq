@@ -4,57 +4,25 @@ python-multipart==0.0.9
 pydantic==2.7.4
 pydantic-settings==2.3.4
 
-# ── PDF text extraction ───────────────────────────────────────────────────────
-# pypdf: pure Python, zero compilation, works on any Python version
-pypdf==4.3.1
-# pdfplumber: better table/layout-aware extraction for structured papers
+# PDF processing — pure Python or pre-built wheels only
+pypdf==4.2.0
 pdfplumber==0.11.1
-# pdfminer: low-level character-position extraction, helps with multi-column
-pdfminer.six==20231228
-
-# ── Image conversion (PDF pages → images for OCR) ────────────────────────────
 pdf2image==1.17.0
-# Pillow unpinned — lets pip pick a pre-built wheel for whatever Python is running
+pytesseract==0.3.10
 Pillow>=10.3.0
 
-# ── OCR engine wrappers ───────────────────────────────────────────────────────
-# pytesseract: wrapper for Tesseract binary (must be installed separately on server)
-pytesseract==0.3.10
-# opencv-python-headless: image preprocessing before OCR
-#   - deskewing (fixes rotated scans)
-#   - thresholding (removes shadows, improves contrast)
-#   - denoising (removes scan artifacts)
-#   - border/stamp removal
-opencv-python-headless==4.9.0.80
-
-# ── Math & equation handling ─────────────────────────────────────────────────
-# pix2tex: LaTeX OCR — converts equation images to LaTeX strings
-#   handles integrals, matrices, Greek symbols, fractions
-pix2tex[api]==0.1.2
-# sympy: validates/normalizes extracted math expressions
-sympy==1.12
-
-# ── AI / NLP ─────────────────────────────────────────────────────────────────
+# AI / NLP
 sentence-transformers==2.7.0
 scikit-learn==1.4.2
 numpy==1.26.4
-# transformers needed for pix2tex and sentence-transformers
-transformers==4.40.2
-# torch CPU-only — smaller, faster install, sufficient for inference
-torch==2.2.2
-torchvision==0.17.2
 
-# ── Vector database ───────────────────────────────────────────────────────────
+# Vector database
 chromadb==0.4.24
 
-# ── Database ─────────────────────────────────────────────────────────────────
+# Database
 supabase==2.4.6
 
-# ── Utilities ────────────────────────────────────────────────────────────────
+# Utilities
 python-dotenv==1.0.1
 httpx==0.27.0
 aiofiles==23.2.1
-# regex: better than re for Unicode/math symbol handling
-regex==2024.4.16
-# ftfy: fixes broken/garbled Unicode from bad OCR (fixes ﬁ→fi, etc.)
-ftfy==6.2.0
