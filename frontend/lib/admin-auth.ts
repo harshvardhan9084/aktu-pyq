@@ -7,5 +7,8 @@ function getExpectedToken(): string {
 }
 
 export function isAdminAuthenticated(req: NextRequest): boolean {
+  console.log("Received token:", token);
+  console.log("Expected token:", expectedToken);
+  console.log("Match result:", token === expectedToken);
   return req.cookies.get('admin_session')?.value === getExpectedToken()
 }
