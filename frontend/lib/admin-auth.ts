@@ -2,19 +2,27 @@ import { NextRequest } from 'next/server'
 import { createHash } from 'crypto'
 
 function getExpectedToken(): string {
-  const hash = process.env.ADMIN_PASSWORD ?? ''
-  console.log("SALT from env:", process.env.SESSION_SALT);
-  console.log("HASH from env:", process.env.ADMIN_PASSWORD);
-  return createHash('sha256').update(hash + 'session_salt_aktu_pyq').digest('hex')
+  // Use the salt from env or fall back to your hardcoded string
+  const salt = process.env.SESSION_SALT || 'session_salt_aktu_pyq';
+  const passwordHash = process.env.ADMIN_PASSWORD || '';
+  
+  return createHash('sha256')
+    .update(passwordHash + salt)
+    .digest('hex');
 }
 
-typescript export async function isAdminAuthenticated(req: NextRequest): Promise<boolean> { const adminSessionCookie = await req.cookies.get("admin_session"); 
-  const receivedToken = adminSessionCookie?.value; if (!receivedToken) { 
-  return false; 
+export async function isAdminAuthenticated(req: NextRequest): Promise<boolean> {
+  const adminSessionCookie = req.cookies.get("admin_session");
+  const receivedToken = adminSessionCookie?.value;
+
+  if (!receivedToken) {
+    return false;
+  }
+
+  const expectedToken = getExpectedToken();
+  
+  // Optional: Logging for debugging (remove in production)
+  // console.log("Match result:", receivedToken === expectedToken);
+
+  return receivedToken === expectedToken;
 }
-// export function isAdminAuthenticated(req: NextRequest): boolean {
-//   console.log("Received token:", req.cookies.get('admin_session')?.value);
-//   console.log("Expected token:", getExpectedToken());
-//   console.log("Match result:", req.cookies.get('admin_session')?.value === getExpectedToken());
-//   return req.cookies.get('admin_session')?.value === getExpectedToken()
-// }
