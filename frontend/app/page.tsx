@@ -1,5 +1,5 @@
 'use client'
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Search, SlidersHorizontal, Zap, BookOpen, TrendingUp, Users } from 'lucide-react'
 import Navbar from '@/components/Navbar'
 import NaturalSearch from '@/components/NaturalSearch'
