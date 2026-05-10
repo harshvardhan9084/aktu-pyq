@@ -2,9 +2,9 @@ import { NextRequest } from 'next/server'
 import { createHash } from 'crypto'
 
 function getExpectedToken(): string {
-  const hash = process.env.ADMIN_PASSWORD_HASH ?? ''
+  const hash = process.env.ADMIN_PASSWORD ?? ''
   console.log("SALT from env:", process.env.SESSION_SALT);
-  console.log("HASH from env:", process.env.ADMIN_PASSWORD_HASH);
+  console.log("HASH from env:", process.env.ADMIN_PASSWORD);
   return createHash('sha256').update(hash + 'session_salt_aktu_pyq').digest('hex')
 }
 
