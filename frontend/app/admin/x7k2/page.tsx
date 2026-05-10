@@ -21,6 +21,8 @@ export default function AdminLogin() {
         body: JSON.stringify({ password }),
       })
       if (res.ok) {
+        const data = await res.json()
+        sessionStorage.setItem('admin_token', data.token)  // ← STORE TOKEN
         router.push('/admin/x7k2/dashboard')
       } else {
         setError('Incorrect password.')
