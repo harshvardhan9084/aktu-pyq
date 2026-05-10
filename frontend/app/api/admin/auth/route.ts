@@ -14,17 +14,20 @@ export async function POST(req: NextRequest) {
   }
 
   if (sha256(password) !== expectedHash) {
-    await new Promise(r => setTimeout(r, 800)) // brute-force delay
+    await new Promise(r => setTimeout(r, 800))
     return NextResponse.json({ error: 'Invalid password' }, { status: 401 })
   }
 
-  const sessionToken = sha256(password + 'session_salt_aktu_pyq')
+  // MUST match getExpectedToken() in admin-auth.ts:
+  // sha256( ADMIN_PASSWORD_HASH + salt )
+  const sessionToken = sha256(expectedHash + 'session_salt_aktu_pyq')
+  
   const response = NextResponse.json({ ok: true, token: sessionToken })
   response.cookies.set('admin_session', sessionToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'strict',
-    maxAge: 60 * 60 * 8, // 8 hours
+    maxAge: 60 * 60 * 8,
     path: '/',
   })
   return response
