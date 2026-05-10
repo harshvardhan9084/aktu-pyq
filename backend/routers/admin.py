@@ -5,7 +5,7 @@ from typing import Optional
 import os, logging
 from datetime import datetime
 from supabase import create_client
-from services.pdf_processor import compute_file_hash, process_pdf, extract_question_type, normalize_question
+from services.pdf_processor import compute_file_hash, process_pdf, normalize_question, extract_question_type
 from services.clustering import cluster_questions, detect_trend, compute_importance_score
 
 router = APIRouter()
@@ -33,20 +33,21 @@ def verify_admin(token: Optional[str]):
 
 async def process_and_insert(pdf_bytes: bytes, subject: str, year_int: Optional[int],
                               semester_int: Optional[int], branch: str, embedder, sb):
-    questions_raw, method, n_pages = process_pdf(pdf_bytes)
-    log(f"Extracted {len(questions_raw)} questions via {method} from {n_pages} pages")
+    extracted, method, n_pages = process_pdf(pdf_bytes)
+    log(f"Extracted {len(extracted)} questions via {method} from {n_pages} pages")
 
-    if not questions_raw:
+    if not extracted:
         return 0, 0, 0
 
-    normalized = [normalize_question(q) for q in questions_raw]
-    embeddings = embedder.embed_batch(normalized)
-    cluster_labels = cluster_questions(embeddings, questions_raw)
+    # extracted is now List[ExtractedQuestion] — get text for embedding
+    texts = [normalize_question(q.text) for q in extracted]
+    embeddings = embedder.embed_batch(texts)
+    cluster_labels = cluster_questions(embeddings, [q.text for q in extracted])
     n_clusters = len(set(l for l in cluster_labels if l != -1))
 
     new_count = 0
-    for q_text, cluster_id in zip(questions_raw, cluster_labels):
-        q_type = extract_question_type(q_text)
+    for eq, cluster_id in zip(extracted, cluster_labels):
+        q_text = eq.text
         existing = sb.table("questions").select("id,frequency_count,year_appeared").ilike("question_text", q_text[:80]).execute()
         if existing.data:
             r = existing.data[0]
@@ -59,17 +60,25 @@ async def process_and_insert(pdf_bytes: bytes, subject: str, year_int: Optional[
             }).eq("id", r["id"]).execute()
         else:
             sb.table("questions").insert({
-                "question_text": q_text, "normalized_text": normalize_question(q_text),
-                "subject": subject or None, "branch": branch or None,
-                "semester": semester_int, "year_appeared": [year_int] if year_int else [],
-                "frequency_count": 1, "first_appearance_year": year_int, "last_appearance_year": year_int,
-                "question_type": q_type, "cluster_id": cluster_id if cluster_id != -1 else None,
-                "concept_tags": [], "importance_score": 0.0, "must_revise_flag": False,
+                "question_text": q_text,
+                "normalized_text": normalize_question(q_text),
+                "subject": subject or None,
+                "branch": branch or None,
+                "semester": semester_int,
+                "year_appeared": [year_int] if year_int else [],
+                "frequency_count": 1,
+                "first_appearance_year": year_int,
+                "last_appearance_year": year_int,
+                "question_type": eq.question_type,
+                "cluster_id": cluster_id if cluster_id != -1 else None,
+                "concept_tags": [],
+                "importance_score": 0.0,
+                "must_revise_flag": False,
                 "trend_direction": "insufficient_data",
             }).execute()
             new_count += 1
 
-    return len(questions_raw), new_count, n_clusters
+    return len(extracted), new_count, n_clusters
 
 
 @router.post("/upload")
