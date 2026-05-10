@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
   }
 
   const sessionToken = sha256(password + 'session_salt_aktu_pyq')
-  const response = NextResponse.json({ ok: true })
+  const response = NextResponse.json({ ok: true, token: sessionToken })
   response.cookies.set('admin_session', sessionToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
