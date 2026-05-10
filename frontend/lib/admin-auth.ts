@@ -3,6 +3,8 @@ import { createHash } from 'crypto'
 
 function getExpectedToken(): string {
   const hash = process.env.ADMIN_PASSWORD_HASH ?? ''
+  console.log("SALT from env:", process.env.SESSION_SALT);
+  console.log("HASH from env:", process.env.ADMIN_PASSWORD_HASH);
   return createHash('sha256').update(hash + 'session_salt_aktu_pyq').digest('hex')
 }
 
