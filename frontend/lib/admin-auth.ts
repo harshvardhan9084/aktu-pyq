@@ -8,9 +8,13 @@ function getExpectedToken(): string {
   return createHash('sha256').update(hash + 'session_salt_aktu_pyq').digest('hex')
 }
 
-export function isAdminAuthenticated(req: NextRequest): boolean {
-  console.log("Received token:", req.cookies.get('admin_session')?.value);
-  console.log("Expected token:", getExpectedToken());
-  console.log("Match result:", req.cookies.get('admin_session')?.value === getExpectedToken());
-  return req.cookies.get('admin_session')?.value === getExpectedToken()
+typescript export async function isAdminAuthenticated(req: NextRequest): Promise<boolean> { const adminSessionCookie = await req.cookies.get("admin_session"); 
+  const receivedToken = adminSessionCookie?.value; if (!receivedToken) { 
+  return false; 
 }
+// export function isAdminAuthenticated(req: NextRequest): boolean {
+//   console.log("Received token:", req.cookies.get('admin_session')?.value);
+//   console.log("Expected token:", getExpectedToken());
+//   console.log("Match result:", req.cookies.get('admin_session')?.value === getExpectedToken());
+//   return req.cookies.get('admin_session')?.value === getExpectedToken()
+// }
