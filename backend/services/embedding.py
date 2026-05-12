@@ -1,32 +1,62 @@
 """
-Embedding Service
-Converts question text → dense vectors using all-MiniLM-L6-v2
-Free, runs locally, no API cost (~90MB model download on first run).
+Embedding Service — Lightweight TF-IDF based
+Replaced sentence-transformers (~350MB PyTorch) with scikit-learn TF-IDF (~5MB)
+to fit within Render free tier 512MB RAM limit.
+
+Trade-off: TF-IDF is keyword-based (not semantic), but works well for clustering
+exam questions from the same subject/paper where vocabulary overlap is high.
 """
 
-from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
 import numpy as np
 from typing import List
-
-MODEL_NAME = "all-MiniLM-L6-v2"
 
 
 class EmbeddingService:
     def __init__(self):
-        self.model = SentenceTransformer(MODEL_NAME)
-        print(f"  Loaded: {MODEL_NAME}")
+        self.vectorizer = TfidfVectorizer(
+            max_features=384,
+            stop_words='english',
+            ngram_range=(1, 2),       # unigrams + bigrams
+            sublinear_tf=True,        # log-scaled TF for better weighting
+            min_df=1,                 # no minimum doc frequency (small datasets)
+            max_df=0.95,              # ignore very common terms
+        )
+        self._fitted = False
+        print("  Loaded: TF-IDF vectorizer (384-dim, ngram 1-2)")
+
+    def _ensure_fitted(self, texts: List[str]):
+        """Fit vectorizer on first batch, then reuse."""
+        if not self._fitted and texts:
+            self.vectorizer.fit(texts)
+            self._fitted = True
 
     def embed(self, text: str) -> List[float]:
-        vec = self.model.encode(text, normalize_embeddings=True)
-        return vec.tolist()
+        vec = self._transform([text])
+        return vec[0]
 
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        vecs = self.model.encode(texts, normalize_embeddings=True, batch_size=64, show_progress_bar=False)
+        if not texts:
+            return []
+        return self._transform(texts)
+
+    def _transform(self, texts: List[str]) -> List[List[float]]:
+        """Transform texts to L2-normalized dense vectors."""
+        self._ensure_fitted(texts)
+        vecs = self.vectorizer.transform(texts).toarray()
+
+        # L2 normalize so cosine similarity = dot product
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        norms[norms == 0] = 1
+        vecs = vecs / norms
+
         return vecs.tolist()
 
     def cosine_similarity(self, a: List[float], b: List[float]) -> float:
         return float(np.dot(a, b))
 
-    def find_similar(self, query_vec: List[float], candidates: List[List[float]], threshold: float = 0.82) -> List[int]:
+    def find_similar(self, query_vec: List[float], candidates: List[List[float]],
+                     threshold: float = 0.82) -> List[int]:
         scores = [self.cosine_similarity(query_vec, c) for c in candidates]
         return [i for i, s in enumerate(scores) if s >= threshold]

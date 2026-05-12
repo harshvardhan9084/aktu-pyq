@@ -17,13 +17,9 @@ opencv-python-headless>=4.8.0
 # Unicode cleanup for garbled OCR output
 ftfy>=6.1.0
 
-# AI / NLP
-sentence-transformers==2.7.0
+# NLP — lightweight: TF-IDF embeddings + DBSCAN clustering (no PyTorch needed)
 scikit-learn==1.4.2
 numpy==1.26.4
-
-# Vector database
-chromadb==0.4.24
 
 # Database
 supabase==2.4.6

@@ -1,6 +1,6 @@
 """
-Semantic Clustering Service
-DBSCAN — no need to specify cluster count in advance.
+Clustering Service — groups similar questions using DBSCAN.
+Works with TF-IDF vectors (lower threshold than neural embeddings).
 """
 
 from datetime import datetime
@@ -12,7 +12,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-SIMILARITY_THRESHOLD = 0.82   # raise for stricter grouping
+SIMILARITY_THRESHOLD = 0.45   # TF-IDF cosine threshold (lower than neural 0.82)
 MIN_CLUSTER_SIZE = 2
 
 

@@ -3,7 +3,7 @@ services:
     name: aktu-pyq-backend
     env: python
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    buildCommand: apt-get update && apt-get install -y --no-install-recommends poppler-utils tesseract-ocr && pip install --no-cache-dir -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: SUPABASE_URL
@@ -14,5 +14,3 @@ services:
         sync: false
       - key: ADMIN_API_TOKEN
         sync: false
-      - key: CHROMA_PERSIST_PATH
-        value: ./chroma_db
