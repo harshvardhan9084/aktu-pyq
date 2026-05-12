@@ -42,22 +42,22 @@ class ExtractedQuestion:
 # ── Noise patterns ────────────────────────────────────────────────────────────
 
 NOISE_PATTERNS = [
-    r"(?i)note\s*:",
-    r"(?i)all questions are compulsory",
-    r"(?i)attempt any \w+",
-    r"(?i)maximum marks\s*[:\-]?\s*\d+",
-    r"(?i)time\s*(?:allowed|duration)\s*[:\-]",
-    r"(?i)roll\s*no",
-    r"(?i)examination\s+\d{4}",
-    r"(?i)b\.?\s*tech",
-    r"(?i)end\s*term\s*exam",
-    r"(?i)mid\s*term\s*exam",
-    r"(?i)paper\s*code\s*:",
+    r"note\s*:",
+    r"all questions are compulsory",
+    r"attempt any \w+",
+    r"maximum marks\s*[:\-]?\s*\d+",
+    r"time\s*(?:allowed|duration)\s*[:\-]",
+    r"roll\s*no",
+    r"examination\s+\d{4}",
+    r"b\.?\s*tech",
+    r"end\s*term\s*exam",
+    r"mid\s*term\s*exam",
+    r"paper\s*code\s*:",
     r"\[\s*\d+\s*(?:marks?)?\s*\]",
     r"\(\s*\d+\s*(?:marks?)?\s*\)",
-    r"(?i)page\s*\d+\s*of\s*\d+",
-    r"(?i)contd\.?",
-    r"(?i)turn\s*over",
+    r"page\s*\d+\s*of\s*\d+",
+    r"contd\.?",
+    r"turn\s*over",
 ]
 NOISE_RE = re.compile("|".join(NOISE_PATTERNS), re.IGNORECASE)
 
@@ -80,18 +80,18 @@ SUB_PART_RE = re.compile(
 
 # Diagram/circuit indicators — these questions get has_diagram=True
 DIAGRAM_INDICATORS = [
-    r"(?i)(?:draw|sketch|show|plot|illustrate)\s+(?:the\s+)?(?:circuit|diagram|graph|waveform|figure|block\s+diagram|network)",
-    r"(?i)referring\s+to\s+(?:the\s+)?(?:circuit|figure|diagram)",
-    r"(?i)from\s+the\s+(?:circuit|figure|diagram)\s+(?:shown|given|above|below)",
-    r"(?i)fig(?:ure|\.)\s*\d+",
-    r"(?i)as\s+shown\s+in\s+(?:the\s+)?(?:circuit|figure|diagram)",
+    r"(?:draw|sketch|show|plot|illustrate)\s+(?:the\s+)?(?:circuit|diagram|graph|waveform|figure|block\s+diagram|network)",
+    r"referring\s+to\s+(?:the\s+)?(?:circuit|figure|diagram)",
+    r"from\s+the\s+(?:circuit|figure|diagram)\s+(?:shown|given|above|below)",
+    r"fig(?:ure|\.)\s*\d+",
+    r"as\s+shown\s+in\s+(?:the\s+)?(?:circuit|figure|diagram)",
 ]
-DIAGRAM_RE = re.compile("|".join(DIAGRAM_INDICATORS))
+DIAGRAM_RE = re.compile("|".join(DIAGRAM_INDICATORS), re.IGNORECASE)
 
 # Math/equation indicators
 MATH_INDICATORS = [
-    r"(?i)derive\s+(?:the\s+)?(?:expression|equation|formula)",
-    r"(?i)solve\s+(?:the\s+)?(?:differential|integral|equation)",
+    r"derive\s+(?:the\s+)?(?:expression|equation|formula)",
+    r"solve\s+(?:the\s+)?(?:differential|integral|equation)",
     r"[∫∑∏√∂∇±×÷≤≥≠∞αβγδεζηθλμπρσφψω]",
     r"\b(?:laplace|fourier|z-transform|integral|differential)\b",
     r"d[xy]/d[txy]",                           # dy/dx, dx/dt etc.
@@ -379,9 +379,9 @@ def extract_sub_parts(text: str) -> Tuple[str, List[str]]:
 def classify_question(text: str) -> Tuple[str, bool, bool]:
     """
     Returns (question_type, has_diagram, has_math).
-    question_type: theory | numerical | short | diagram
-    All returned values are valid for the DB CHECK constraint:
-      question_type IN ('theory','numerical','short','other','diagram')
+    question_type: theory | numerical | short | other
+    Note: 'diagram' is mapped to 'other' for DB compatibility with
+    CHECK constraint: question_type IN ('theory','numerical','short','other','diagram')
     """
     has_diagram = bool(DIAGRAM_RE.search(text))
     has_math = bool(MATH_RE.search(text))
@@ -430,7 +430,7 @@ def segment_questions_from_text(full_text: str, page_offset: int = 0) -> List[Ex
         # Clean marks notation from question text
         q_text = MARKS_RE.sub("", q_text).strip()
 
-        if len(q_text) < 10 or len(q_text) > 1200:
+        if len(q_text) < 15 or len(q_text) > 1200:
             continue
 
         parent_text, sub_parts = extract_sub_parts(q_text)
