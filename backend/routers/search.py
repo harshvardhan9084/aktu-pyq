@@ -1,4 +1,5 @@
-"""Search Router — NL and filter-based endpoints"""
+"""Search Router — NL and filter-based endpoints
+Supports multi-university search via university filter parameter."""
 
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
@@ -8,8 +9,15 @@ from supabase import create_client
 
 router = APIRouter()
 
+_supabase_client = None
+
+
 def get_supabase():
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
+    global _supabase_client
+    if _supabase_client is None:
+        _supabase_client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
+    return _supabase_client
+
 
 SUBJECT_MAP = {
     "electrical": "Electrical Engineering",
@@ -25,6 +33,14 @@ SUBJECT_MAP = {
     "operating systems": "Operating Systems",
 }
 
+# Known university short codes for NL parsing
+UNIVERSITY_MAP = {
+    "aktu": "AKTU",
+    "apjaktu": "AKTU",
+    "uptu": "AKTU",
+    "gbtu": "AKTU",
+}
+
 def parse_nl_query(query: str) -> dict:
     q = query.lower()
     result = {}
@@ -37,6 +53,8 @@ def parse_nl_query(query: str) -> dict:
     if m: result["unit"] = int(m.group(1))
     for key, full in SUBJECT_MAP.items():
         if key in q: result["subject"] = full; break
+    for key, code in UNIVERSITY_MAP.items():
+        if key in q: result["university"] = code; break
     m = re.search(r"(?:more than|at least|repeated)\s*(\d+)", q)
     if m: result["min_frequency"] = int(m.group(1))
     return result
@@ -46,10 +64,13 @@ class NLSearchRequest(BaseModel):
     query: str
 
 class FilterSearchRequest(BaseModel):
+    university: Optional[str] = None
     subject: Optional[str] = None
+    branch: Optional[str] = None
+    programme: Optional[str] = None
     unit: Optional[int] = None
     question_type: Optional[str] = None
-    count: int = 10
+    count: Optional[int] = 10
     min_frequency: Optional[int] = None
 
 
@@ -58,23 +79,52 @@ async def search_natural_language(req: NLSearchRequest, request: Request):
     if not req.query.strip():
         raise HTTPException(400, "Query cannot be empty")
     parsed = parse_nl_query(req.query)
-    results = await run_search(**{k: parsed.get(k) for k in ["subject","unit","question_type","count","min_frequency"]})
+    results = await run_search(**{k: parsed.get(k) for k in ["university","subject","branch","programme","unit","question_type","count","min_frequency"]})
     return {"parsed_intent": parsed, "results": results}
 
 
 @router.post("/filter")
 async def search_with_filters(req: FilterSearchRequest):
-    results = await run_search(subject=req.subject, unit=req.unit, question_type=req.question_type,
-                                count=req.count, min_frequency=req.min_frequency)
+    results = await run_search(
+        university=req.university, subject=req.subject, branch=req.branch,
+        programme=req.programme, unit=req.unit, question_type=req.question_type,
+        count=req.count, min_frequency=req.min_frequency
+    )
     return {"results": results}
 
 
-async def run_search(subject=None, unit=None, question_type=None, count=10, min_frequency=None):
+@router.get("/universities")
+async def list_universities():
+    """Return list of active universities for the frontend dropdown."""
+    sb = get_supabase()
+    data = sb.table("universities").select("name, short_code").eq("is_active", True).execute().data
+    return {"universities": data}
+
+
+def escape_like(val: str) -> str:
+    """Escape LIKE special characters % and _ so they match literally."""
+    return val.replace("%", r"\%").replace("_", r"\_")
+
+
+async def run_search(university=None, subject=None, branch=None, programme=None,
+                     unit=None, question_type=None, count=10, min_frequency=None):
     sb = get_supabase()
     q = sb.table("questions").select("*")
-    if subject: q = q.ilike("subject", f"%{subject}%")
+    if university:
+        q = q.eq("university", university)
+    elif not university:
+        # Default to AKTU for backward compatibility
+        q = q.eq("university", "AKTU")
+    if subject:
+        q = q.ilike("subject", f"%{escape_like(subject)}%")
+    if branch:
+        q = q.ilike("branch", f"%{escape_like(branch)}%")
+    if programme:
+        q = q.eq("programme", programme)
     if unit: q = q.eq("unit", unit)
     if question_type: q = q.eq("question_type", question_type)
     if min_frequency: q = q.gte("frequency_count", min_frequency)
-    result = q.order("importance_score", desc=True).order("frequency_count", desc=True).limit(count or 10).execute()
+    # Fix: use "if count is not None" instead of "count or 10" to handle count=0
+    effective_count = count if count is not None else 10
+    result = q.order("importance_score", desc=True).order("frequency_count", desc=True).limit(effective_count).execute()
     return result.data

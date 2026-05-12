@@ -1,18 +1,17 @@
 """
 PDF Processing Service — AKTU PYQ Intelligence System
-═══════════════════════════════════════════════════════
 Handles every failure mode found in real AKTU papers:
 
-  ✓ Digital (text-based) PDFs          — pypdf + pdfplumber
-  ✓ Scanned PDFs                        — Tesseract OCR
-  ✓ Rotated/skewed scans               — OpenCV deskew
-  ✓ Shadow, low contrast, noise        — OpenCV preprocessing
-  ✓ Math equations & symbols           — pix2tex LaTeX OCR
-  ✓ Circuits/diagrams                  — detected, tagged, skipped cleanly
-  ✓ Questions split across pages       — cross-page stitching
-  ✓ Sub-parts (a)(b)(c) under one Q    — grouped under parent
-  ✓ Garbled Unicode from bad OCR       — ftfy cleanup
-  ✓ Duplicate questions in same paper  — hash dedup
+  - Digital (text-based) PDFs          - pypdf + pdfplumber
+  - Scanned PDFs                        - Tesseract OCR
+  - Rotated/skewed scans               - OpenCV deskew
+  - Shadow, low contrast, noise        - OpenCV preprocessing
+  - Math equations & symbols           - pix2tex LaTeX OCR
+  - Circuits/diagrams                  - detected, tagged, skipped cleanly
+  - Questions split across pages       - cross-page stitching
+  - Sub-parts (a)(b)(c) under one Q    - grouped under parent
+  - Garbled Unicode from bad OCR       - ftfy cleanup
+  - Duplicate questions in same paper  - hash dedup
 """
 
 import hashlib
@@ -43,22 +42,22 @@ class ExtractedQuestion:
 # ── Noise patterns ────────────────────────────────────────────────────────────
 
 NOISE_PATTERNS = [
-    r"note\s*:",
-    r"all questions are compulsory",
-    r"attempt any \w+",
-    r"maximum marks\s*[:\-]?\s*\d+",
-    r"time\s*(?:allowed|duration)\s*[:\-]",
-    r"roll\s*no",
-    r"examination\s+\d{4}",
-    r"b\.?\s*tech",
-    r"end\s*term\s*exam",
-    r"mid\s*term\s*exam",
-    r"paper\s*code\s*:",
+    r"(?i)note\s*:",
+    r"(?i)all questions are compulsory",
+    r"(?i)attempt any \w+",
+    r"(?i)maximum marks\s*[:\-]?\s*\d+",
+    r"(?i)time\s*(?:allowed|duration)\s*[:\-]",
+    r"(?i)roll\s*no",
+    r"(?i)examination\s+\d{4}",
+    r"(?i)b\.?\s*tech",
+    r"(?i)end\s*term\s*exam",
+    r"(?i)mid\s*term\s*exam",
+    r"(?i)paper\s*code\s*:",
     r"\[\s*\d+\s*(?:marks?)?\s*\]",
     r"\(\s*\d+\s*(?:marks?)?\s*\)",
-    r"page\s*\d+\s*of\s*\d+",
-    r"contd\.?",
-    r"turn\s*over",
+    r"(?i)page\s*\d+\s*of\s*\d+",
+    r"(?i)contd\.?",
+    r"(?i)turn\s*over",
 ]
 NOISE_RE = re.compile("|".join(NOISE_PATTERNS), re.IGNORECASE)
 
@@ -81,18 +80,18 @@ SUB_PART_RE = re.compile(
 
 # Diagram/circuit indicators — these questions get has_diagram=True
 DIAGRAM_INDICATORS = [
-    r"(?:draw|sketch|show|plot|illustrate)\s+(?:the\s+)?(?:circuit|diagram|graph|waveform|figure|block\s+diagram|network)",
-    r"referring\s+to\s+(?:the\s+)?(?:circuit|figure|diagram)",
-    r"from\s+the\s+(?:circuit|figure|diagram)\s+(?:shown|given|above|below)",
-    r"fig(?:ure|\.)\s*\d+",
-    r"as\s+shown\s+in\s+(?:the\s+)?(?:circuit|figure|diagram)",
+    r"(?i)(?:draw|sketch|show|plot|illustrate)\s+(?:the\s+)?(?:circuit|diagram|graph|waveform|figure|block\s+diagram|network)",
+    r"(?i)referring\s+to\s+(?:the\s+)?(?:circuit|figure|diagram)",
+    r"(?i)from\s+the\s+(?:circuit|figure|diagram)\s+(?:shown|given|above|below)",
+    r"(?i)fig(?:ure|\.)\s*\d+",
+    r"(?i)as\s+shown\s+in\s+(?:the\s+)?(?:circuit|figure|diagram)",
 ]
 DIAGRAM_RE = re.compile("|".join(DIAGRAM_INDICATORS))
 
 # Math/equation indicators
 MATH_INDICATORS = [
-    r"derive\s+(?:the\s+)?(?:expression|equation|formula)",
-    r"solve\s+(?:the\s+)?(?:differential|integral|equation)",
+    r"(?i)derive\s+(?:the\s+)?(?:expression|equation|formula)",
+    r"(?i)solve\s+(?:the\s+)?(?:differential|integral|equation)",
     r"[∫∑∏√∂∇±×÷≤≥≠∞αβγδεζηθλμπρσφψω]",
     r"\b(?:laplace|fourier|z-transform|integral|differential)\b",
     r"d[xy]/d[txy]",                           # dy/dx, dx/dt etc.
@@ -206,6 +205,19 @@ def preprocess_image_for_ocr(pil_image):
 
 # ── Math / equation OCR ───────────────────────────────────────────────────────
 
+# Singleton: load the pix2tex model once, reuse across all calls
+_latex_ocr_model = None
+
+
+def _get_latex_ocr_model():
+    """Lazy singleton for the pix2tex LatexOCR model (~200MB)."""
+    global _latex_ocr_model
+    if _latex_ocr_model is None:
+        from pix2tex.cli import LatexOCR
+        _latex_ocr_model = LatexOCR()
+    return _latex_ocr_model
+
+
 def extract_math_from_image(pil_image) -> List[str]:
     """
     Detect and extract math equations from an image using pix2tex.
@@ -213,8 +225,7 @@ def extract_math_from_image(pil_image) -> List[str]:
     If pix2tex not available, returns empty list gracefully.
     """
     try:
-        from pix2tex.cli import LatexOCR
-        model = LatexOCR()
+        model = _get_latex_ocr_model()
         latex = model(pil_image)
         if latex and len(latex.strip()) > 3:
             return [latex.strip()]
@@ -267,7 +278,7 @@ def extract_text_digital_pdfplumber(pdf_bytes: bytes) -> Tuple[List[str], int]:
 def extract_text_ocr_pages(pdf_bytes: bytes) -> Tuple[List[str], int]:
     """
     Full OCR pipeline for scanned PDFs.
-    Per page: convert to image → preprocess → Tesseract.
+    Per page: convert to image -> preprocess -> Tesseract.
     Returns (list_of_page_texts, page_count).
     """
     try:
@@ -369,25 +380,27 @@ def classify_question(text: str) -> Tuple[str, bool, bool]:
     """
     Returns (question_type, has_diagram, has_math).
     question_type: theory | numerical | short | diagram
+    All returned values are valid for the DB CHECK constraint:
+      question_type IN ('theory','numerical','short','other','diagram')
     """
     has_diagram = bool(DIAGRAM_RE.search(text))
     has_math = bool(MATH_RE.search(text))
 
     q = text.lower()
 
-    if has_diagram:
-        return "diagram", True, has_math
-
     numerical_kw = ["calculate", "find", "determine", "solve", "compute",
                     "evaluate", "obtain the value", "derive the expression",
                     "prove that", "show that"]
     if any(k in q for k in numerical_kw) or has_math:
-        return "numerical", False, True
+        return "numerical", has_diagram, True
 
     short_kw = ["define", "list", "state", "name", "what is", "mention",
                 "write short note", "briefly explain"]
     if any(k in q for k in short_kw) and len(text) < 150:
-        return "short", False, False
+        return "short", has_diagram, has_math
+
+    if has_diagram:
+        return "diagram", True, has_math
 
     return "theory", False, has_math
 
@@ -417,7 +430,7 @@ def segment_questions_from_text(full_text: str, page_offset: int = 0) -> List[Ex
         # Clean marks notation from question text
         q_text = MARKS_RE.sub("", q_text).strip()
 
-        if len(q_text) < 15 or len(q_text) > 1200:
+        if len(q_text) < 10 or len(q_text) > 1200:
             continue
 
         parent_text, sub_parts = extract_sub_parts(q_text)
@@ -465,11 +478,11 @@ def segment_questions_from_text(full_text: str, page_offset: int = 0) -> List[Ex
 
 def process_pdf(pdf_bytes: bytes) -> Tuple[List[ExtractedQuestion], str, int]:
     """
-    Master pipeline: bytes → (questions, method_used, page_count)
+    Master pipeline: bytes -> (questions, method_used, page_count)
 
     Decision tree:
       1. Try digital extraction (pypdf + pdfplumber, pick best)
-      2. If text is sparse → run OCR pipeline
+      2. If text is sparse -> run OCR pipeline
       3. Stitch pages to handle cross-page questions
       4. Segment into individual questions
       5. Classify each question (theory/numerical/diagram)

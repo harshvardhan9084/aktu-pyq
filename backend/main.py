@@ -14,21 +14,16 @@ load_dotenv()
 
 from routers import search, upload, admin
 from services.embedding import EmbeddingService
-from services.vector_db import VectorDBService
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Loading embedding model...")
+    print("Loading embedding model...")
     app.state.embedder = EmbeddingService()
-    print("✅ Embedding model ready")
-
-    print("🗄  Connecting to vector DB...")
-    app.state.vector_db = VectorDBService()
-    print("✅ Vector DB ready")
+    print("Embedding model ready")
 
     yield
-    print("👋 Shutting down")
+    print("Shutting down")
 
 
 app = FastAPI(

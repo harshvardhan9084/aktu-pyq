@@ -5,8 +5,8 @@ from typing import Optional
 import os, logging
 from datetime import datetime
 from supabase import create_client
-from services.pdf_processor import compute_file_hash, process_pdf, normalize_question, extract_question_type
-from services.clustering import cluster_questions, detect_trend, compute_importance_score
+from services.pdf_processor import compute_file_hash, process_pdf, normalize_question
+from services.clustering import cluster_questions
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -21,8 +21,14 @@ def log(msg: str, level="INFO"):
     (logger.error if level == "ERROR" else logger.info)(msg)
 
 
+_supabase_client = None
+
+
 def get_supabase():
-    return create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
+    global _supabase_client
+    if _supabase_client is None:
+        _supabase_client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
+    return _supabase_client
 
 
 def verify_admin(token: Optional[str]):
@@ -32,7 +38,8 @@ def verify_admin(token: Optional[str]):
 
 
 async def process_and_insert(pdf_bytes: bytes, subject: str, year_int: Optional[int],
-                              semester_int: Optional[int], branch: str, embedder, sb):
+                              semester_int: Optional[int], branch: str, university: str,
+                              programme: Optional[str], embedder, sb):
     extracted, method, n_pages = process_pdf(pdf_bytes)
     log(f"Extracted {len(extracted)} questions via {method} from {n_pages} pages")
 
@@ -48,7 +55,12 @@ async def process_and_insert(pdf_bytes: bytes, subject: str, year_int: Optional[
     new_count = 0
     for eq, cluster_id in zip(extracted, cluster_labels):
         q_text = eq.text
-        existing = sb.table("questions").select("id,frequency_count,year_appeared").ilike("question_text", q_text[:80]).execute()
+        q_normalized = normalize_question(q_text)
+
+        # Fix: use normalized text with wildcards for reliable duplicate detection
+        existing = sb.table("questions").select("id,frequency_count,year_appeared")\
+            .ilike("normalized_text", f"%{q_normalized[:60]}%").execute()
+
         if existing.data:
             r = existing.data[0]
             years = r.get("year_appeared") or []
@@ -61,9 +73,11 @@ async def process_and_insert(pdf_bytes: bytes, subject: str, year_int: Optional[
         else:
             sb.table("questions").insert({
                 "question_text": q_text,
-                "normalized_text": normalize_question(q_text),
+                "normalized_text": q_normalized,
+                "university": university or "AKTU",
                 "subject": subject or None,
                 "branch": branch or None,
+                "programme": programme or None,
                 "semester": semester_int,
                 "year_appeared": [year_int] if year_int else [],
                 "frequency_count": 1,
@@ -85,8 +99,11 @@ async def process_and_insert(pdf_bytes: bytes, subject: str, year_int: Optional[
 async def admin_upload(
     request: Request,
     file: UploadFile = File(...),
-    subject: str = Form(""), branch: str = Form(""),
-    semester: str = Form(""), year: str = Form(""),
+    subject: str = Form(""),
+    branch: str = Form(""),
+    programme: str = Form(""),
+    semester: str = Form(""),
+    year: str = Form(""),
     university: str = Form("AKTU"),
     x_admin_token: Optional[str] = Header(None),
 ):
@@ -98,19 +115,35 @@ async def admin_upload(
     file_hash = compute_file_hash(pdf_bytes)
     sb = get_supabase()
 
-    if sb.table("pdf_submissions").select("id").eq("file_hash", file_hash).execute().data:
-        raise HTTPException(409, "Duplicate: this paper is already processed.")
+    # Fix: only block if an approved submission already exists
+    existing = sb.table("pdf_submissions").select("id,status").eq("file_hash", file_hash).execute()
+    if existing.data:
+        status = existing.data[0].get("status", "pending")
+        if status == "approved":
+            raise HTTPException(409, "Duplicate: this paper is already processed.")
+        # If pending/rejected, allow admin to override
 
     log(f"Admin upload: {file.filename} | {subject} | {year}")
     year_int = int(year) if year.isdigit() else None
     semester_int = int(semester) if semester.isdigit() else None
 
-    total, new_q, clusters = await process_and_insert(pdf_bytes, subject, year_int, semester_int, branch, request.app.state.embedder, sb)
+    total, new_q, clusters = await process_and_insert(pdf_bytes, subject, year_int, semester_int, branch, university, programme or None, request.app.state.embedder, sb)
 
-    sb.table("pdf_submissions").insert({
-        "filename": file.filename, "file_hash": file_hash, "subject": subject or None,
-        "semester": semester_int, "year": year_int, "submitted_by": "admin", "status": "approved",
-    }).execute()
+    # Update existing pending/rejected to approved, or insert new
+    if existing.data:
+        sb.table("pdf_submissions").update({
+            "status": "approved",
+            "subject": subject or None,
+            "semester": semester_int,
+            "year": year_int,
+        }).eq("id", existing.data[0]["id"]).execute()
+    else:
+        sb.table("pdf_submissions").insert({
+            "filename": file.filename, "file_hash": file_hash,
+            "university": university or "AKTU", "subject": subject or None,
+            "branch": branch or None, "programme": programme or None,
+            "semester": semester_int, "year": year_int, "submitted_by": "admin", "status": "approved",
+        }).execute()
 
     log(f"Done: {new_q} new questions, {total - new_q} updates, {clusters} clusters")
     return {"questions_extracted": total, "new_questions": new_q, "clusters_formed": clusters}
@@ -132,7 +165,7 @@ async def approve_submission(sid: int, request: Request, x_admin_token: Optional
     row = sub.data[0]
     try:
         pdf_bytes = sb.storage.from_("pdf-uploads").download(f"submissions/{row['file_hash']}.pdf")
-        await process_and_insert(pdf_bytes, row.get("subject",""), row.get("year"), row.get("semester"), "", request.app.state.embedder, sb)
+        await process_and_insert(pdf_bytes, row.get("subject",""), row.get("year"), row.get("semester"), row.get("branch",""), row.get("university","AKTU"), row.get("programme"), request.app.state.embedder, sb)
         log(f"Submission {sid} approved and processed")
     except Exception as e:
         log(f"Approval processing error for {sid}: {e}", "WARN")
@@ -158,8 +191,10 @@ async def get_stats(x_admin_token: Optional[str] = Header(None)):
     subjects_data = sb.table("questions").select("subject").execute()
     unique_subjects = len(set(r["subject"] for r in subjects_data.data if r.get("subject")))
     ocr_errs = sum(1 for l in LOG_BUFFER if "ERROR" in l and "OCR" in l)
+    # Fix: query actual cluster count instead of hardcoded 0
+    total_clusters = sb.table("clusters").select("id", count="exact").execute().count or 0
     return {
-        "total_questions": total_q, "total_clusters": 0,
+        "total_questions": total_q, "total_clusters": total_clusters,
         "total_subjects": unique_subjects, "total_pdfs_processed": total_subs,
         "pending_submissions": pending, "ocr_errors_today": ocr_errs,
         "last_processed": datetime.now().isoformat(),

@@ -3,6 +3,7 @@ Semantic Clustering Service
 DBSCAN — no need to specify cluster count in advance.
 """
 
+from datetime import datetime
 import numpy as np
 from sklearn.cluster import DBSCAN
 from sklearn.metrics.pairwise import cosine_similarity
@@ -22,7 +23,8 @@ def cluster_questions(embeddings: List[List[float]], question_texts: List[str]) 
     X = np.array(embeddings)
     eps = 1 - SIMILARITY_THRESHOLD
 
-    db = DBSCAN(eps=eps, min_samples=MIN_CLUSTER_SIZE, metric="cosine", n_jobs=-1).fit(X)
+    # Fix: limit n_jobs to avoid resource exhaustion on shared hosting
+    db = DBSCAN(eps=eps, min_samples=MIN_CLUSTER_SIZE, metric="cosine", n_jobs=2).fit(X)
     labels = db.labels_.tolist()
     n_clusters = len(set(l for l in labels if l != -1))
     logger.info(f"Clustering: {n_clusters} clusters, {labels.count(-1)} unique, from {len(embeddings)} inputs")
@@ -48,7 +50,10 @@ def detect_trend(year_appeared: List[int]) -> str:
     return "intermittent"
 
 
-def compute_importance_score(frequency: int, max_frequency: int, trend: str, last_appearance: int, current_year: int = 2024) -> float:
+def compute_importance_score(frequency: int, max_frequency: int, trend: str, last_appearance: int, current_year: int = None) -> float:
+    # Fix: default to current year instead of hardcoded 2024
+    if current_year is None:
+        current_year = datetime.now().year
     freq_score = min(frequency / max(max_frequency, 1), 1.0)
     trend_weights = {"rising": 1.0, "consistent": 0.85, "intermittent": 0.6, "declining": 0.3, "insufficient_data": 0.5}
     trend_score = trend_weights.get(trend, 0.5)

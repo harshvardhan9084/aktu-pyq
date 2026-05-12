@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+/* Fonts loaded via next/font/google in layout.tsx — no render-blocking @import */
 
 @tailwind base;
 @tailwind components;

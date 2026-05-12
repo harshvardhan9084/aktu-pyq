@@ -1,10 +1,10 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Upload, CheckCircle, XCircle, Clock, Database,
   AlertTriangle, RefreshCw, FileText,
-  Activity, Settings, Users, BookOpen, LogOut, BarChart2
+  Activity, Settings, Users, BookOpen, LogOut
 } from 'lucide-react'
 
 type Submission = {
@@ -38,72 +38,152 @@ export default function AdminDashboard() {
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'done' | 'error' | 'duplicate'>('idle')
   const [uploadMsg, setUploadMsg] = useState('')
   const [logs, setLogs] = useState<string[]>([])
-  const [adminToken, setAdminToken] = useState('')
+  const [verified, setVerified] = useState(false)
 
-  useEffect(() => {
-    fetch('/api/admin/verify').then(r => { if (!r.ok) router.push('/admin/x7k2') })
-    // Read stored token from session (set after login)
-    const t = sessionStorage.getItem('admin_token') || ''
-    setAdminToken(t)
-    loadSubmissions(t)
-    loadStats(t)
+  const getToken = useCallback((): string => {
+    return sessionStorage.getItem('admin_token') || ''
   }, [])
 
-  const authHeaders = (token: string) => ({ 'X-Admin-Token': token })
+  const authHeaders = useCallback((token: string) => ({ 'X-Admin-Token': token }), [])
 
-  const loadSubmissions = async (token = adminToken) => {
+  // Verify auth FIRST, then load data only if verified
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/admin/verify')
+        if (!res.ok || cancelled) {
+          router.push('/admin/x7k2')
+          return
+        }
+        setVerified(true)
+        const token = getToken()
+        await Promise.all([
+          loadSubmissions(token),
+          loadStats(token),
+        ])
+      } catch {
+        router.push('/admin/x7k2')
+      }
+    })()
+    return () => { cancelled = true }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadSubmissions = async (token?: string) => {
+    const t = token ?? getToken()
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/submissions`, { headers: authHeaders(token) })
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/submissions`, { headers: authHeaders(t) })
       if (res.ok) setSubmissions(await res.json())
     } catch {}
   }
 
-  const loadStats = async (token = adminToken) => {
+  const loadStats = async (token?: string) => {
+    const t = token ?? getToken()
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/stats`, { headers: authHeaders(token) })
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/stats`, { headers: authHeaders(t) })
       if (res.ok) setStats(await res.json())
     } catch {}
   }
 
   const handleApprove = async (id: number) => {
-    await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/submissions/${id}/approve`, { method: 'POST', headers: authHeaders(adminToken) })
-    loadSubmissions(); loadStats()
+    try {
+      const token = getToken()
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/submissions/${id}/approve`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setUploadStatus('error')
+        setUploadMsg(data.detail || 'Approval failed.')
+        return
+      }
+      await loadSubmissions()
+      await loadStats()
+    } catch {
+      setUploadStatus('error')
+      setUploadMsg('Could not reach backend.')
+    }
   }
 
   const handleReject = async (id: number) => {
-    await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/submissions/${id}/reject`, { method: 'POST', headers: authHeaders(adminToken) })
-    loadSubmissions()
+    try {
+      const token = getToken()
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/submissions/${id}/reject`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setUploadStatus('error')
+        setUploadMsg(data.detail || 'Rejection failed.')
+        return
+      }
+      await loadSubmissions()
+      await loadStats()
+    } catch {
+      setUploadStatus('error')
+      setUploadMsg('Could not reach backend.')
+    }
   }
 
   const handleAdminUpload = async () => {
     if (!uploadFile) return
     setUploadStatus('uploading')
+    setUploadMsg('')
     const formData = new FormData()
     formData.append('file', uploadFile)
     Object.entries(uploadMeta).forEach(([k, v]) => formData.append(k, v))
 
     try {
+      const token = getToken()
       const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/upload`, {
         method: 'POST',
-        headers: authHeaders(adminToken),
+        headers: authHeaders(token),
         body: formData,
       })
       const data = await res.json()
       if (res.status === 409) { setUploadStatus('duplicate'); setUploadMsg('Duplicate paper — already in database.') }
       else if (!res.ok) { setUploadStatus('error'); setUploadMsg(data.detail || 'Upload failed.') }
-      else { setUploadStatus('done'); setUploadMsg(`Done! ${data.questions_extracted} questions extracted, ${data.clusters_formed} clusters formed.`); loadStats() }
+      else { setUploadStatus('done'); setUploadMsg(`Done! ${data.questions_extracted} questions extracted, ${data.clusters_formed} clusters formed.`); await loadStats() }
     } catch { setUploadStatus('error'); setUploadMsg('Could not reach backend.') }
   }
 
   const fetchLogs = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/logs`, { headers: authHeaders(adminToken) })
+      const token = getToken()
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/logs`, { headers: authHeaders(token) })
       if (res.ok) { const data = await res.json(); setLogs(data.logs ?? []) }
     } catch {}
   }
 
+  const handleDbAction = async (label: string, endpoint: string, isDanger: boolean) => {
+    try {
+      const token = getToken()
+      const method = endpoint.includes('pending') ? 'DELETE' : 'POST'
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}${endpoint}`, {
+        method,
+        headers: authHeaders(token),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setUploadStatus('error')
+        setUploadMsg(data.detail || `${label} failed.`)
+        return
+      }
+      setUploadStatus('done')
+      setUploadMsg(`${label} completed successfully.`)
+      await loadStats()
+      await loadSubmissions()
+    } catch {
+      setUploadStatus('error')
+      setUploadMsg(`Could not reach backend for: ${label}`)
+    }
+  }
+
   const handleLogout = async () => {
     await fetch('/api/admin/logout', { method: 'POST' })
+    sessionStorage.removeItem('admin_token')
     router.push('/admin/x7k2')
   }
 
@@ -114,6 +194,15 @@ export default function AdminDashboard() {
     { id: 'database', icon: Database, label: 'Database' },
     { id: 'logs', icon: FileText, label: 'Logs' },
   ]
+
+  // Don't render dashboard until auth is verified
+  if (!verified) {
+    return (
+      <main className="min-h-screen flex items-center justify-center">
+        <div className="text-ink-500 text-sm animate-pulse">Verifying access...</div>
+      </main>
+    )
+  }
 
   return (
     <main className="min-h-screen">
@@ -169,7 +258,7 @@ export default function AdminDashboard() {
                   <div className="flex items-center gap-2 mb-2"><Clock size={14} className="text-gold-400" /><span className="text-ink-300 text-sm font-medium">Pending Reviews</span></div>
                   <span className="font-display font-bold text-3xl text-gold-400">{stats.pending_submissions}</span>
                   <p className="text-ink-500 text-xs mt-1">submissions waiting for your review</p>
-                  {stats.pending_submissions > 0 && <button onClick={() => setTab('submissions')} className="btn-primary !px-3 !py-1.5 text-xs mt-3">Review now ↗</button>}
+                  {stats.pending_submissions > 0 && <button onClick={() => setTab('submissions')} className="btn-primary !px-3 !py-1.5 text-xs mt-3">Review now</button>}
                 </div>
                 <div className="glass rounded-xl p-4">
                   <div className="flex items-center gap-2 mb-2"><AlertTriangle size={14} className="text-rose-400" /><span className="text-ink-300 text-sm font-medium">OCR Errors Today</span></div>
@@ -228,7 +317,7 @@ export default function AdminDashboard() {
             <p className="text-ink-500 text-sm mb-5">Goes straight into the processing pipeline — no review needed.</p>
             <div className="glass-strong rounded-2xl p-5 space-y-3">
               <label className={`block border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${uploadFile ? 'border-gold-500/50 bg-gold-500/5' : 'border-ink-600 hover:border-ink-400'}`}>
-                <input type="file" accept=".pdf" className="hidden" onChange={e => setUploadFile(e.target.files?.[0] ?? null)} />
+                <input type="file" accept=".pdf" className="hidden" onChange={e => { setUploadFile(e.target.files?.[0] ?? null); setUploadStatus('idle'); setUploadMsg('') }} />
                 {uploadFile
                   ? <div className="flex items-center justify-center gap-2"><FileText size={16} className="text-gold-400" /><span className="text-gold-300 text-sm">{uploadFile.name}</span></div>
                   : <><Upload size={20} className="text-ink-500 mx-auto mb-2" /><p className="text-ink-400 text-sm">Click to select PDF</p></>}
@@ -243,7 +332,7 @@ export default function AdminDashboard() {
               {uploadStatus === 'duplicate' && <div className="text-gold-400 text-sm flex gap-2"><AlertTriangle size={16} /> {uploadMsg}</div>}
               {uploadStatus === 'error' && <div className="text-rose-400 text-sm flex gap-2"><XCircle size={16} /> {uploadMsg}</div>}
               <button onClick={handleAdminUpload} disabled={!uploadFile || uploadStatus === 'uploading'} className="btn-primary w-full disabled:opacity-40">
-                {uploadStatus === 'uploading' ? 'Processing...' : 'Upload & Process ↗'}
+                {uploadStatus === 'uploading' ? 'Processing...' : 'Upload & Process'}
               </button>
             </div>
           </div>
@@ -255,17 +344,24 @@ export default function AdminDashboard() {
             <h2 className="font-display text-xl font-bold text-ink-100 mb-4">Database Management</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {[
-                { label: 'Re-run clustering on all questions', desc: 'Recalculates all semantic clusters. Takes ~10 mins. Run after bulk uploads.', action: 'Run Clustering', danger: false },
-                { label: 'Rebuild search index', desc: 'Rebuilds the ChromaDB vector index. Run if search results seem off.', action: 'Rebuild Index', danger: false },
-                { label: 'Recalculate frequency & importance scores', desc: 'Updates frequency counts and importance scores for all questions.', action: 'Recalculate', danger: false },
-                { label: 'Export database to JSON', desc: 'Download a full backup of all questions and metadata.', action: 'Export ↓', danger: false },
-                { label: 'Manage subjects & syllabus map', desc: 'Add/edit subject names, units, and branch mappings.', action: 'Manage ↗', danger: false },
-                { label: 'Clear all pending submissions', desc: 'Permanently deletes all pending PDF submissions from the queue.', action: 'Clear Queue', danger: true },
+                { label: 'Re-run clustering on all questions', desc: 'Recalculates all semantic clusters. Takes ~10 mins. Run after bulk uploads.', action: 'Run Clustering', danger: false, endpoint: '/admin/recluster' },
+                { label: 'Rebuild search index', desc: 'Rebuilds the ChromaDB vector index. Run if search results seem off.', action: 'Rebuild Index', danger: false, endpoint: '/admin/rebuild-index' },
+                { label: 'Recalculate frequency & importance scores', desc: 'Updates frequency counts and importance scores for all questions.', action: 'Recalculate', danger: false, endpoint: '/admin/recalculate' },
+                { label: 'Export database to JSON', desc: 'Download a full backup of all questions and metadata.', action: 'Export', danger: false, endpoint: '/admin/export' },
+                { label: 'Manage subjects & syllabus map', desc: 'Add/edit subject names, units, and branch mappings.', action: 'Manage', danger: false, endpoint: '' },
+                { label: 'Clear all pending submissions', desc: 'Permanently deletes all pending PDF submissions from the queue.', action: 'Clear Queue', danger: true, endpoint: '/admin/submissions/pending' },
               ].map(item => (
                 <div key={item.label} className="glass rounded-xl p-4">
                   <p className="text-ink-200 text-sm font-medium mb-1">{item.label}</p>
                   <p className="text-ink-500 text-xs mb-3 leading-relaxed">{item.desc}</p>
-                  <button className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${item.danger ? 'border-rose-500/30 text-rose-400 hover:bg-rose-500/10' : 'border-gold-500/30 text-gold-400 hover:bg-gold-500/10'}`}>{item.action}</button>
+                  <button
+                    onClick={() => {
+                      if (!item.endpoint) { alert('Coming soon — this feature is under development.'); return }
+                      if (item.danger && !confirm('Are you sure? This cannot be undone.')) return
+                      handleDbAction(item.label, item.endpoint, item.danger)
+                    }}
+                    className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${item.danger ? 'border-rose-500/30 text-rose-400 hover:bg-rose-500/10' : 'border-gold-500/30 text-gold-400 hover:bg-gold-500/10'}`}
+                  >{item.action}</button>
                 </div>
               ))}
             </div>

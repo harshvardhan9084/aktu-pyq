@@ -4,6 +4,7 @@ import { ChevronRight, RotateCcw } from 'lucide-react'
 import type { Question } from '@/lib/supabase'
 
 const STEPS = [
+  { id: 'university', label: 'University', options: ['AKTU'] },
   { id: 'programme', label: 'Programme', options: ['B.Tech', 'Diploma', 'MBA', 'MCA', 'M.Tech'] },
   {
     id: 'branch', label: 'Branch', dependsOn: 'programme',
@@ -26,9 +27,10 @@ const STEPS = [
 ]
 
 const STEP_COLORS = [
+  'border-jade-500/40 text-jade-400',
   'border-gold-500/40 text-gold-400', 'border-jade-500/40 text-jade-400',
   'border-gold-500/40 text-gold-400', 'border-jade-500/40 text-jade-400',
-  'border-gold-500/40 text-gold-400', 'border-jade-500/40 text-jade-400',
+  'border-gold-500/40 text-gold-400', 'border-jade-500/40 text-gold-400',
   'border-gold-500/40 text-gold-400',
 ]
 
@@ -69,10 +71,15 @@ export default function DynamicForm({ onResults, onLoading }: Props) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          university: values.university || 'AKTU',
+          programme: values.programme || null,
+          branch: values.branch || null,
           subject: values.subject,
           unit: values.unit === 'All Units' ? null : values.unit?.replace('Unit ', ''),
-          question_type: values.question_type === 'All Types' ? null : values.question_type?.toLowerCase(),
-          count: parseInt(values.count) || 10,
+          question_type: values.question_type === 'All Types' ? null
+            : values.question_type === 'Short Answer' ? 'short'
+            : values.question_type?.toLowerCase(),
+          count: values.count === 'All' ? 100 : parseInt(values.count) || 10,
         }),
       })
       if (!res.ok) throw new Error()
