@@ -1,0 +1,6 @@
+- [ ] Implement missing admin endpoints in backend/routers/admin.py: /admin/recluster, /admin/rebuild-index, /admin/recalculate, /admin/export, /admin/submissions/pending
+- [ ] Make admin auth accept X-Admin-Token (existing) AND Authorization Bearer (optional hardening)
+- [ ] Add request/response error details to reduce “Could not reach backend” ambiguity
+- [ ] Test locally by running FastAPI and calling each admin endpoint (smoke tests)
+- [x] Retest from frontend: ensure admin dashboard buttons stop producing 404
+- [ ] Retest search endpoints: /search/nl and /search/filter

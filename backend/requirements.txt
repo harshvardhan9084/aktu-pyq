@@ -1,0 +1,30 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+pydantic==2.7.4
+pydantic-settings==2.3.4
+
+# PDF processing — pure Python or pre-built wheels only
+pypdf==4.2.0
+pdfplumber==0.11.1
+pdf2image==1.17.0
+pytesseract==0.3.10
+Pillow>=10.3.0
+
+# Image preprocessing for OCR (deskew, denoise, threshold)
+opencv-python-headless>=4.8.0
+
+# Unicode cleanup for garbled OCR output
+ftfy>=6.1.0
+
+# NLP — lightweight: TF-IDF embeddings + DBSCAN clustering (no PyTorch needed)
+scikit-learn==1.4.2
+numpy==1.26.4
+
+# Database
+supabase==2.4.6
+
+# Utilities
+python-dotenv==1.0.1
+httpx==0.27.0
+aiofiles==23.2.1
