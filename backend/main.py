@@ -34,14 +34,26 @@ app = FastAPI(
     redoc_url=None,
 )
 
-origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+# ---------------------------------------------------------------------------
+# FIXED CORS CONFIGURATION
+# ---------------------------------------------------------------------------
+# We use allow_origin_regex instead of allow_origins.
+# This allows ANY Vercel preview URL (e.g., https://something.vercel.app) 
+# and localhost to access the API, which is required for Admin credentials.
+# ---------------------------------------------------------------------------
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origin_regex=[
+        r"https?://.*\.vercel\.app",  # Matches any Vercel deployment
+        r"http://localhost:\d+",      # Matches localhost with any port
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
 
 app.include_router(search.router, prefix="/search", tags=["Search"])
 app.include_router(upload.router, prefix="/submit", tags=["Submit"])
@@ -53,5 +65,5 @@ def health():
     return {"status": "ok", "service": "AKTU PYQ Intelligence"}
 
 @app.get("/")
-def read_root():
-    return {"message": "AKTU PYQ API is running. Go to /docs for documentation."}
+def root():
+    return {"message": "AKTU PYQ Intelligence API is running. Visit /docs for API documentation."}
