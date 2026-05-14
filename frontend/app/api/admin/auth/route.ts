@@ -1,3 +1,9 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createHash } from 'crypto'
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text).digest('hex')
+}
 // ... (keep your imports)
 
 export async function POST(req: NextRequest) {
