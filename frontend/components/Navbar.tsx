@@ -19,12 +19,25 @@ export default function Navbar() {
         </Link>
 
         <div className="hidden md:flex items-center gap-6">
-          <Link href="/#search" className="text-ink-300 hover:text-ink-100 text-sm transition-colors">Search</Link>
-          <Link href="/contribute" className="text-ink-300 hover:text-ink-100 text-sm transition-colors">Contribute</Link>
-          <Link href="/contribute#donate" className="btn-primary !px-4 !py-1.5">Support ↗</Link>
+          <Link href="/#search" className="text-ink-300 hover:text-ink-100 text-sm transition-colors">
+            Search
+          </Link>
+          <Link href="/papers" className="text-ink-300 hover:text-ink-100 text-sm transition-colors">
+            Papers
+          </Link>
+          <Link href="/contribute" className="text-ink-300 hover:text-ink-100 text-sm transition-colors">
+            Contribute
+          </Link>
+          <Link href="/contribute#donate" className="btn-primary !px-4 !py-1.5">
+            Support ↗
+          </Link>
         </div>
 
-        <button className="md:hidden text-ink-300 hover:text-ink-100" onClick={() => setOpen(!open)} aria-label="Toggle menu">
+        <button
+          className="md:hidden text-ink-300 hover:text-ink-100"
+          onClick={() => setOpen(!open)}
+          aria-label="Toggle menu"
+        >
           {open ? <X size={20} /> : <Menu size={20} />}
         </button>
       </div>
@@ -32,6 +45,7 @@ export default function Navbar() {
       {open && (
         <div className="md:hidden glass-strong border-t border-white/5 px-4 py-4 flex flex-col gap-3">
           <Link href="/#search" className="text-ink-200 text-sm py-2" onClick={() => setOpen(false)}>Search</Link>
+          <Link href="/papers" className="text-ink-200 text-sm py-2" onClick={() => setOpen(false)}>Papers</Link>
           <Link href="/contribute" className="text-ink-200 text-sm py-2" onClick={() => setOpen(false)}>Contribute</Link>
           <Link href="/contribute#donate" className="btn-primary text-center mt-1" onClick={() => setOpen(false)}>Support ↗</Link>
         </div>

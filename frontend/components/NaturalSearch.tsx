@@ -9,6 +9,8 @@ const SUGGESTIONS = [
   'Questions repeated more than 4 times in DBMS',
   'Important Laplace Transform questions',
   'Unit 2 short questions of Engineering Maths',
+  'Must revise questions in Data Structures',
+  'Diagram questions in Digital Electronics Unit 4',
 ]
 
 interface Props {
@@ -37,6 +39,19 @@ export default function NaturalSearch({ onResults, onLoading }: Props) {
       const data = await res.json()
       setParsed(data.parsed_intent)
       onResults(data.results)
+
+      // Track search (fire-and-forget)
+      const sid = sessionStorage.getItem('sid') || ''
+      fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/analytics/event`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event_type: 'search',
+          page: '/',
+          metadata: { query: q, mode: 'nl', parsed: data.parsed_intent },
+          session_id: sid,
+        }),
+      }).catch(() => {})
     } catch {
       setError('Could not reach the server. Make sure the backend is running.')
       onLoading(false)

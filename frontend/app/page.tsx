@@ -1,6 +1,6 @@
 'use client'
 import { useState, useRef, useEffect } from 'react'
-import { Search, SlidersHorizontal, Zap, BookOpen, TrendingUp, Users } from 'lucide-react'
+import { Search, SlidersHorizontal, Zap, BookOpen } from 'lucide-react'
 import Navbar from '@/components/Navbar'
 import NaturalSearch from '@/components/NaturalSearch'
 import DynamicForm from '@/components/DynamicForm'
@@ -12,12 +12,25 @@ export default function Home() {
   const [results, setResults] = useState<Question[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
+  const [totalQuestions, setTotalQuestions] = useState<number | null>(null)
   const resultsRef = useRef<HTMLDivElement>(null)
 
-  // Speculative preloading: silently wake the Render backend the moment
-  // user lands on the page, so it's warm by the time they hit Search.
+  // Wake Render backend + fetch real question count
   useEffect(() => {
     fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/health`).catch(() => {})
+    fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/search/stats/public`)
+      .then(r => r.json())
+      .then(d => setTotalQuestions(d.total_questions ?? null))
+      .catch(() => {})
+
+    // Track page view (fire-and-forget)
+    const sid = sessionStorage.getItem('sid') || Math.random().toString(36).slice(2)
+    sessionStorage.setItem('sid', sid)
+    fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/admin/analytics/event`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_type: 'page_view', page: '/', session_id: sid }),
+    }).catch(() => {})
   }, [])
 
   const handleResults = (data: Question[]) => {
@@ -42,31 +55,36 @@ export default function Home() {
           <span className="gold-text">Gets Asked</span>
         </h1>
 
-        <p className="text-ink-300 text-base md:text-lg max-w-xl mx-auto leading-relaxed mb-10 animate-fade-up"
-          style={{ animationDelay: '0.1s', opacity: 0 }}>
+        <p
+          className="text-ink-300 text-base md:text-lg max-w-xl mx-auto leading-relaxed mb-10 animate-fade-up"
+          style={{ animationDelay: '0.1s', opacity: 0 }}
+        >
           Stop scrolling through PDFs. We've processed every AKTU question paper,
           clustered repeated questions, and ranked them by frequency — so you study what matters.
         </p>
 
-        <div className="flex items-center justify-center gap-6 md:gap-10 mb-12 animate-fade-up"
-          style={{ animationDelay: '0.2s', opacity: 0 }}>
-          {[
-            { icon: BookOpen, val: '12,000+', label: 'Questions indexed' },
-            { icon: TrendingUp, val: '40+', label: 'Subjects covered' },
-            { icon: Users, val: '8 yrs', label: 'Of paper history' },
-          ].map(({ icon: Icon, val, label }) => (
-            <div key={label} className="text-center">
-              <div className="flex items-center justify-center gap-1.5 mb-0.5">
-                <Icon size={13} className="text-gold-400" />
-                <span className="font-display font-bold text-gold-400 text-lg">{val}</span>
-              </div>
-              <span className="text-ink-400 text-xs">{label}</span>
-            </div>
-          ))}
+        {/* Live question count — only this one stat, real data */}
+        <div
+          className="flex items-center justify-center gap-2 mb-12 animate-fade-up"
+          style={{ animationDelay: '0.2s', opacity: 0 }}
+        >
+          <BookOpen size={14} className="text-gold-400" />
+          {totalQuestions !== null ? (
+            <span className="font-display font-bold text-gold-400 text-lg">
+              {totalQuestions.toLocaleString()}
+            </span>
+          ) : (
+            <span className="w-20 h-5 bg-ink-700 rounded animate-pulse inline-block" />
+          )}
+          <span className="text-ink-400 text-sm">questions indexed</span>
         </div>
 
-        <div id="search" className="glass-strong rounded-2xl p-1 inline-flex gap-1 mb-6 animate-fade-up"
-          style={{ animationDelay: '0.25s', opacity: 0 }}>
+        {/* Search mode toggle */}
+        <div
+          id="search"
+          className="glass-strong rounded-2xl p-1 inline-flex gap-1 mb-6 animate-fade-up"
+          style={{ animationDelay: '0.25s', opacity: 0 }}
+        >
           <button
             onClick={() => setMode('nl')}
             className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${mode === 'nl' ? 'bg-gold-500 text-ink-900' : 'text-ink-300 hover:text-ink-100'}`}
@@ -100,6 +118,8 @@ export default function Home() {
         <p>
           Built for AKTU students ·{' '}
           <a href="/contribute" className="text-gold-500/70 hover:text-gold-400 transition-colors">Contribute a paper</a>
+          {' · '}
+          <a href="/papers" className="text-gold-500/70 hover:text-gold-400 transition-colors">Browse papers</a>
           {' · '}
           <a href="/contribute#donate" className="text-gold-500/70 hover:text-gold-400 transition-colors">Support the project</a>
         </p>

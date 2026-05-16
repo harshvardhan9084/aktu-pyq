@@ -1,28 +1,37 @@
-"""Upload Router — student PDF submissions with duplicate detection
-Supports multi-university submissions."""
+"""
+Upload Router — v2
+Student-submitted PDFs go directly into scrape_queue for automatic processing.
+No admin review required for processing — queue worker handles it async.
+Immediate feedback: duplicate detection, queued confirmation.
+No extra form fields (subject/name/year) — all auto-extracted from PDF header.
+"""
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request
-from typing import Optional
-import os, logging, time
+from fastapi import APIRouter, UploadFile, File, HTTPException, Request
+import os, logging, time, hashlib, io
 from supabase import create_client
-from services.pdf_processor import compute_file_hash
+from services.pdf_processor import compute_file_hash, extract_paper_metadata
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-MAX_FILE_SIZE = 20 * 1024 * 1024
 
-# Simple in-memory rate limiter: IP -> [timestamps]
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_MAX = 5
+
 _upload_attempts: dict = {}
-RATE_LIMIT_WINDOW = 60   # seconds
-RATE_LIMIT_MAX = 5       # max uploads per window per IP
+_sb = None
+
+
+def get_supabase():
+    global _sb
+    if _sb is None:
+        _sb = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
+    return _sb
 
 
 def _check_rate_limit(client_ip: str) -> bool:
-    """Returns True if the client is rate-limited."""
     now = time.time()
-    if client_ip not in _upload_attempts:
-        _upload_attempts[client_ip] = []
-    # Prune old entries
+    _upload_attempts.setdefault(client_ip, [])
     _upload_attempts[client_ip] = [t for t in _upload_attempts[client_ip] if now - t < RATE_LIMIT_WINDOW]
     if len(_upload_attempts[client_ip]) >= RATE_LIMIT_MAX:
         return True
@@ -30,29 +39,18 @@ def _check_rate_limit(client_ip: str) -> bool:
     return False
 
 
-_supabase_client = None
-
-
-def get_supabase():
-    global _supabase_client
-    if _supabase_client is None:
-        _supabase_client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
-    return _supabase_client
-
-
 @router.post("/pdf")
 async def submit_pdf(
     request: Request,
     file: UploadFile = File(...),
-    subject: Optional[str] = Form(None),
-    branch: Optional[str] = Form(None),
-    programme: Optional[str] = Form(None),
-    semester: Optional[str] = Form(None),
-    year: Optional[str] = Form(None),
-    university: Optional[str] = Form("AKTU"),
-    submitted_by: str = Form("anonymous"),
 ):
-    # Rate limiting by client IP
+    """
+    Student contribution endpoint.
+    - No manual metadata fields — everything auto-extracted from the PDF header.
+    - Duplicate detected immediately via file_hash.
+    - File goes into scrape_queue for automatic processing.
+    - pdf_submissions record created for audit trail.
+    """
     client_ip = request.client.host if request.client else "unknown"
     if _check_rate_limit(client_ip):
         raise HTTPException(429, "Too many uploads. Please wait a minute before trying again.")
@@ -62,33 +60,117 @@ async def submit_pdf(
 
     pdf_bytes = await file.read()
     if len(pdf_bytes) > MAX_FILE_SIZE:
-        raise HTTPException(413, "File too large. Maximum size is 20MB.")
+        raise HTTPException(413, "File too large. Maximum size is 20 MB.")
 
     file_hash = compute_file_hash(pdf_bytes)
     sb = get_supabase()
 
-    existing = sb.table("pdf_submissions").select("id").eq("file_hash", file_hash).execute()
-    if existing.data:
-        raise HTTPException(409, "This paper is already in our database.")
+    # Exact duplicate check — same file bytes
+    existing_sub = sb.table("pdf_submissions").select("id,status,subject,year").eq("file_hash", file_hash).execute()
+    if existing_sub.data:
+        row = existing_sub.data[0]
+        subject_hint = row.get("subject") or "this subject"
+        return {
+            "duplicate": True,
+            "message": f"We already have this exact paper in our database ({subject_hint}). Thank you for trying to help!",
+            "subject": subject_hint,
+        }
 
-    record = {
+    # Auto-extract metadata from paper header
+    meta = extract_paper_metadata(pdf_bytes)
+
+    # Check scrape_queue for same file (by URL is not applicable for uploads —
+    # we check submissions table above; this is belt-and-suspenders by subject+year+session)
+    if meta.subject_code and meta.year and meta.exam_session:
+        dupes = (
+            sb.table("pdf_submissions")
+            .select("id,subject")
+            .eq("subject_code", meta.subject_code)
+            .eq("year", meta.year)
+            .eq("exam_session", meta.exam_session)
+            .execute()
+        )
+        if dupes.data:
+            subject_hint = dupes.data[0].get("subject") or meta.subject_name or meta.subject_code
+            return {
+                "duplicate": True,
+                "message": f"We already have this paper ({subject_hint}, {meta.year} {meta.exam_session.capitalize()} Semester). Thank you anyway!",
+                "subject": subject_hint,
+            }
+
+    # Upload PDF to storage
+    storage_path = f"submissions/{file_hash}.pdf"
+    try:
+        sb.storage.from_("pdf-uploads").upload(storage_path, pdf_bytes, {"content-type": "application/pdf"})
+    except Exception as e:
+        logger.warning(f"Storage upload failed (non-fatal): {e}")
+
+    # Insert pdf_submissions record
+    sub_record = {
         "filename": file.filename,
         "file_hash": file_hash,
-        "university": university or "AKTU",
-        "subject": subject,
-        "branch": branch,
-        "programme": programme,
-        "semester": int(semester) if semester and semester.isdigit() else None,
-        "year": int(year) if year and year.isdigit() else None,
-        "submitted_by": submitted_by[:100],
+        "university": meta.university,
+        "subject": meta.subject_name,
+        "subject_code": meta.subject_code,
+        "branch": meta.branch,
+        "programme": meta.programme,
+        "semester": meta.semester,
+        "year": meta.year,
+        "exam_session": meta.exam_session,
+        "submitted_by": "student",
         "status": "pending",
     }
-    result = sb.table("pdf_submissions").insert(record).execute()
+    sub_result = sb.table("pdf_submissions").insert(sub_record).execute()
+    sub_id = sub_result.data[0]["id"] if sub_result.data else None
 
+    # Add to scrape_queue — points to storage URL (backend worker will re-download)
+    # We store a special internal:// scheme so the scraper knows to fetch from Supabase Storage
+    queue_url = f"internal://submissions/{file_hash}.pdf"
     try:
-        sb.storage.from_("pdf-uploads").upload(f"submissions/{file_hash}.pdf", pdf_bytes)
+        sb.table("scrape_queue").insert({
+            "pdf_url": queue_url,
+            "status": "pending",
+            "subject": meta.subject_name,
+            "subject_code": meta.subject_code,
+            "branch": meta.branch,
+            "programme": meta.programme,
+            "semester": meta.semester,
+            "year": meta.year,
+            "exam_session": meta.exam_session,
+        }).execute()
     except Exception as e:
-        logger.warning(f"Storage upload failed: {e}")
+        logger.warning(f"scrape_queue insert failed: {e}")
 
-    logger.info(f"New submission: {file.filename} from {submitted_by} [{university}]")
-    return {"message": "Submitted successfully. An admin will review your paper.", "id": result.data[0]["id"]}
+    # Track contribution analytics
+    try:
+        sb.table("analytics_events").insert({
+            "event_type": "contribute",
+            "page": "/contribute",
+            "metadata": {"filename": file.filename, "subject_code": meta.subject_code},
+        }).execute()
+        # Increment contributors counter
+        row = sb.table("site_counters").select("value").eq("key", "total_contributors").execute()
+        if row.data:
+            new_val = (row.data[0]["value"] or 0) + 1
+            sb.table("site_counters").update({"value": new_val}).eq("key", "total_contributors").execute()
+    except Exception:
+        pass
+
+    logger.info(f"New contribution: {file.filename} | {meta.subject_name} | {meta.year} {meta.exam_session}")
+
+    subject_hint = meta.subject_name or meta.subject_code or "your paper"
+    return {
+        "duplicate": False,
+        "message": "Paper received and queued for processing.",
+        "subject": subject_hint,
+        "metadata": {
+            "subject": meta.subject_name,
+            "subject_code": meta.subject_code,
+            "branch": meta.branch,
+            "programme": meta.programme,
+            "semester": meta.semester,
+            "year": meta.year,
+            "exam_session": meta.exam_session,
+        },
+        "submission_id": sub_id,
+    }
