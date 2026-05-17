@@ -1,0 +1,17 @@
+.env
+package.json
+package-lock.json
+__pycache__/
+*.pyc
+*.pyo
+chroma_db/
+temp_uploads/
+node_modules/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.DS_Store
+.idea/
+.vscode/
