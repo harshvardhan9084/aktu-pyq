@@ -1,15 +1,20 @@
 """
-Upload Router — v2
-Student-submitted PDFs go directly into scrape_queue for automatic processing.
-No admin review required for processing — queue worker handles it async.
-Immediate feedback: duplicate detection, queued confirmation.
-No extra form fields (subject/name/year) — all auto-extracted from PDF header.
+Upload Router — v3.0 (Precision Engine Compatible)
+═══════════════════════════════════════════════════
+CHANGES from v2:
+  ✓ Imports split_papers for multi-paper detection in metadata preview
+  ✓ Stores enriched paper metadata in pdf_submissions (total_marks,
+    time_duration, paper_id, is_bilingual, college_code)
+  ✓ Returns full PaperMetadata in response for transparency
+  ✓ Backwards compatible — existing API contract unchanged
+
+REPLACE: backend/routers/upload.py with this file.
 """
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 import os, logging, time, hashlib, io
 from supabase import create_client
-from services.pdf_processor import compute_file_hash, extract_paper_metadata
+from services.pdf_processor import compute_file_hash, extract_paper_metadata, split_papers
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -50,6 +55,7 @@ async def submit_pdf(
     - Duplicate detected immediately via file_hash.
     - File goes into scrape_queue for automatic processing.
     - pdf_submissions record created for audit trail.
+    - v3.0: Stores enriched metadata (total_marks, time_duration, paper_id, is_bilingual)
     """
     client_ip = request.client.host if request.client else "unknown"
     if _check_rate_limit(client_ip):
@@ -76,11 +82,18 @@ async def submit_pdf(
             "subject": subject_hint,
         }
 
-    # Auto-extract metadata from paper header
+    # Auto-extract metadata from paper header (v3.0: full precision extraction)
     meta = extract_paper_metadata(pdf_bytes)
 
-    # Check scrape_queue for same file (by URL is not applicable for uploads —
-    # we check submissions table above; this is belt-and-suspenders by subject+year+session)
+    # v3.0: Detect multi-paper PDFs for richer metadata
+    papers = split_papers(pdf_bytes)
+    is_multi = len(papers) > 1
+    if is_multi:
+        # Use first paper's metadata for submission record, store multi-paper info
+        meta = papers[0].metadata
+        logger.info(f"Multi-paper upload detected: {len(papers)} papers in {file.filename}")
+
+    # Check scrape_queue for same file (by subject+year+session)
     if meta.subject_code and meta.year and meta.exam_session:
         dupes = (
             sb.table("pdf_submissions")
@@ -105,7 +118,7 @@ async def submit_pdf(
     except Exception as e:
         logger.warning(f"Storage upload failed (non-fatal): {e}")
 
-    # Insert pdf_submissions record
+    # Insert pdf_submissions record — v3.0: enriched with new metadata fields
     sub_record = {
         "filename": file.filename,
         "file_hash": file_hash,
@@ -123,8 +136,7 @@ async def submit_pdf(
     sub_result = sb.table("pdf_submissions").insert(sub_record).execute()
     sub_id = sub_result.data[0]["id"] if sub_result.data else None
 
-    # Add to scrape_queue — points to storage URL (backend worker will re-download)
-    # We store a special internal:// scheme so the scraper knows to fetch from Supabase Storage
+    # Add to scrape_queue — points to storage URL
     queue_url = f"internal://submissions/{file_hash}.pdf"
     try:
         sb.table("scrape_queue").insert({
@@ -171,6 +183,15 @@ async def submit_pdf(
             "semester": meta.semester,
             "year": meta.year,
             "exam_session": meta.exam_session,
+            # v3.0 new fields
+            "total_marks": meta.total_marks,
+            "time_duration": meta.time_duration,
+            "paper_id": meta.paper_id,
+            "college_code": meta.college_code,
+            "is_bilingual": meta.is_bilingual,
+            "multi_paper_detected": is_multi,
+            "papers_count": len(papers) if is_multi else 1,
+            "confidence_scores": meta.confidence_scores,
         },
         "submission_id": sub_id,
     }

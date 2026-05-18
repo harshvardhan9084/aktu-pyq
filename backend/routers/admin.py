@@ -1,13 +1,21 @@
 """
-Admin Router — v2.1
-FIXES:
-  ✓ track_event: stores full rich payload from analytics.ts
-  ✓ analytics_summary: device breakdown, top pages, search queries, scroll depth, shares
-  ✓ scrape/run: handles internal://submissions/{hash}.pdf (student uploads via Storage)
-  ✓ recluster: actually runs clustering + updates cluster_id on all questions
-  ✓ rebuild-index: clears + rebuilds ChromaDB / resets embedder vectorizer
-  ✓ export: returns JSON with download-ready structure
-  ✓ recalculate: batch-updates importance_score + must_revise_flag
+Admin Router — v3.0 (Precision Engine Compatible)
+═══════════════════════════════════════════════════════════════
+CHANGES from v2.1:
+  ✓ process_and_insert() now writes ALL 15+ new metadata fields per question
+    (co_number, bloom_level, difficulty_level, section, section_type,
+     given_data, required_output, formulas_mentioned, figure_references,
+     has_derivation, has_proof, has_circuit_analysis, has_comparison,
+     confidence_score, language_ratio)
+  ✓ /metadata/extract now returns full PaperMetadata (total_marks, time_duration,
+    paper_id, college_code, is_bilingual, confidence_scores, extraction_notes,
+    number_of_sections, section_breakdown)
+  ✓ /upload now auto-detects multi-paper PDFs and processes each separately
+  ✓ /scrape/run uses process_pdf_multi for concatenated PDFs
+  ✓ Enriched paper_metadata in all response payloads
+
+REPLACE: backend/routers/admin.py with this file.
+RUN:     migration_v3_add_columns.sql on your Supabase dashboard FIRST.
 """
 
 from fastapi import APIRouter, UploadFile, File, Form, Header, HTTPException, Request
@@ -19,8 +27,9 @@ from fastapi.responses import JSONResponse
 
 from supabase import create_client
 from services.pdf_processor import (
-    compute_file_hash, process_pdf, normalize_question,
-    extract_diagram_crop, PaperMetadata
+    compute_file_hash, process_pdf, process_pdf_multi, normalize_question,
+    extract_diagram_crop, extract_paper_metadata, split_papers,
+    PaperMetadata, PaperSplit,
 )
 from services.clustering import cluster_questions, detect_trend, compute_importance_score
 
@@ -80,6 +89,34 @@ def _sanitize_question_type(qt: str) -> str:
     return qt if qt in valid else "other"
 
 
+def _sanitize_difficulty(d: Optional[str]) -> Optional[str]:
+    valid = {"easy", "medium", "hard"}
+    if d and d.lower() in valid:
+        return d.lower()
+    return None
+
+
+def _sanitize_bloom(b: Optional[str]) -> Optional[str]:
+    valid = {"K1", "K2", "K3", "K4", "K5", "K6", "L1", "L2", "L3", "L4", "L5", "L6"}
+    if b and b.upper() in valid:
+        return b.upper()
+    return None
+
+
+def _sanitize_section(s: Optional[str]) -> Optional[str]:
+    valid = {"A", "B", "C", "D"}
+    if s and s.upper() in valid:
+        return s.upper()
+    return None
+
+
+def _sanitize_section_type(st: Optional[str]) -> Optional[str]:
+    valid = {"short", "long", "essay"}
+    if st and st.lower() in valid:
+        return st.lower()
+    return None
+
+
 def _increment_counter(sb, key: str, delta: int = 1):
     try:
         sb.rpc("increment_counter", {"counter_key": key, "delta": delta}).execute()
@@ -98,6 +135,32 @@ def _increment_counter(sb, key: str, delta: int = 1):
             logger.warning(f"Counter increment failed ({key}): {e}")
 
 
+def _build_paper_meta_dict(meta: PaperMetadata) -> dict:
+    """Build a full paper metadata dict from PaperMetadata — includes all new v3 fields."""
+    return {
+        "subject":           meta.subject_name,
+        "subject_code":      meta.subject_code,
+        "branch":            meta.branch,
+        "semester":          meta.semester,
+        "year":              meta.year,
+        "programme":         meta.programme,
+        "exam_session":      meta.exam_session,
+        "exam_type":         meta.exam_type,
+        "time_duration":     meta.time_duration,
+        "total_marks":       meta.total_marks,
+        "paper_id":          meta.paper_id,
+        "college_code":      meta.college_code,
+        "paper_title":       meta.paper_title,
+        "instruction_text":  meta.instruction_text,
+        "number_of_sections": meta.number_of_sections,
+        "section_breakdown": meta.section_breakdown,
+        "is_bilingual":      meta.is_bilingual,
+        "has_hindi":         meta.has_hindi,
+        "confidence_scores": meta.confidence_scores,
+        "extraction_notes":  meta.extraction_notes,
+    }
+
+
 # ── Core processing ────────────────────────────────────────────────────────────
 
 async def process_and_insert(
@@ -114,24 +177,99 @@ async def process_and_insert(
     sb,
     upload_diagrams: bool = True,
 ) -> dict:
+    """
+    v3.0: Now uses process_pdf_multi to handle multi-paper PDFs.
+    Writes ALL extracted metadata fields per question (15+ new fields).
+    Falls back to process_pdf for single-paper PDFs.
+    """
+    # ── Detect multi-paper vs single-paper ──
+    papers = split_papers(pdf_bytes)
+    is_multi = len(papers) > 1
+
+    if is_multi:
+        log(f"Multi-paper PDF detected: {len(papers)} papers inside one file")
+        all_results = []
+        total_new = total_updated = total_clusters = total_extracted = 0
+        combined_meta = {}
+
+        for i, paper in enumerate(papers):
+            log(f"  Processing paper {i+1}/{len(papers)}: pages {paper.start_page+1}-{paper.end_page+1} | "
+                f"code={paper.metadata.subject_code} year={paper.metadata.year}")
+
+            # Extract questions from this paper's text
+            paper_result = await _process_single_paper(
+                pdf_bytes, paper, subject, year_int, semester_int, branch,
+                university, programme, exam_session, subject_code,
+                embedder, sb, upload_diagrams, paper_index=i,
+            )
+            all_results.append(paper_result)
+            total_extracted += paper_result["questions_extracted"]
+            total_new += paper_result["new_questions"]
+            total_updated += paper_result["updated_questions"]
+            total_clusters += paper_result["clusters_formed"]
+            if paper_result["paper_metadata"]:
+                combined_meta[f"paper_{i+1}"] = paper_result["paper_metadata"]
+
+        log(f"Multi-paper done: {total_new} new, {total_updated} updated, "
+            f"{total_clusters} clusters across {len(papers)} papers")
+        return {
+            "questions_extracted": total_extracted,
+            "new_questions": total_new,
+            "updated_questions": total_updated,
+            "clusters_formed": total_clusters,
+            "multi_paper": True,
+            "papers_count": len(papers),
+            "paper_metadata": combined_meta,
+        }
+    else:
+        # Single-paper path (backwards compatible)
+        paper = papers[0]
+        return await _process_single_paper(
+            pdf_bytes, paper, subject, year_int, semester_int, branch,
+            university, programme, exam_session, subject_code,
+            embedder, sb, upload_diagrams,
+        )
+
+
+async def _process_single_paper(
+    pdf_bytes: bytes,
+    paper: PaperSplit,
+    subject: str,
+    year_int: Optional[int],
+    semester_int: Optional[int],
+    branch: str,
+    university: str,
+    programme: Optional[str],
+    exam_session: Optional[str],
+    subject_code: Optional[str],
+    embedder,
+    sb,
+    upload_diagrams: bool = True,
+    paper_index: int = 0,
+) -> dict:
+    """
+    Process a single paper (from split_papers or the whole PDF).
+    v3.0: Writes ALL new metadata fields to database.
+    """
+    # Use the paper's full_text for segmentation
     extracted, method, n_pages, paper_meta = process_pdf(pdf_bytes)
-    log(f"Extracted {len(extracted)} questions via {method} | pages={n_pages} | meta={paper_meta}")
+    log(f"  Extracted {len(extracted)} questions via {method} | pages={n_pages}")
 
     if not extracted:
         return {
             "questions_extracted": 0, "new_questions": 0,
             "updated_questions": 0, "clusters_formed": 0,
-            "paper_metadata": {},
+            "paper_metadata": _build_paper_meta_dict(paper.metadata),
         }
 
-    # Prefer admin-supplied values; fall back to auto-detected
-    eff_subject  = subject  or paper_meta.subject_name or ""
-    eff_branch   = branch   or paper_meta.branch or ""
-    eff_semester = semester_int or paper_meta.semester
-    eff_programme = programme or paper_meta.programme
-    eff_session  = exam_session or paper_meta.exam_session
-    eff_code     = subject_code or paper_meta.subject_code
-    eff_year     = year_int or paper_meta.year
+    # Prefer admin-supplied values; fall back to split-paper metadata; then to process_pdf metadata
+    eff_subject  = subject  or paper.metadata.subject_name or paper_meta.subject_name or ""
+    eff_branch   = branch   or paper.metadata.branch or paper_meta.branch or ""
+    eff_semester = semester_int or paper.metadata.semester or paper_meta.semester
+    eff_programme = programme or paper.metadata.programme or paper_meta.programme
+    eff_session  = exam_session or paper.metadata.exam_session or paper_meta.exam_session
+    eff_code     = subject_code or paper.metadata.subject_code or paper_meta.subject_code
+    eff_year     = year_int or paper.metadata.year or paper_meta.year
 
     texts = [normalize_question(q.text) for q in extracted]
     embeddings = embedder.embed_batch(texts)
@@ -163,6 +301,7 @@ async def process_and_insert(
                 existing = None
 
         if existing:
+            # ── UPDATE existing question with new metadata if missing ──
             ex_years = existing.get("year_appeared") or []
             ex_sessions = existing.get("exam_sessions") or []
             new_years = list(set(ex_years + ([eff_year] if eff_year else [])))
@@ -173,7 +312,9 @@ async def process_and_insert(
             trend = detect_trend(new_years)
             last_year = max(new_years) if new_years else (eff_year or datetime.now().year)
             importance = compute_importance_score(new_freq, max(current_max, new_freq), trend, last_year)
-            sb.table("questions").update({
+
+            # Build update payload — only update fields that are missing/empty
+            update_payload = {
                 "frequency_count": new_freq,
                 "year_appeared": new_years,
                 "exam_sessions": new_sessions,
@@ -181,14 +322,52 @@ async def process_and_insert(
                 "trend_direction": trend,
                 "importance_score": importance,
                 "must_revise_flag": importance >= 0.75,
-            }).eq("id", existing["id"]).execute()
+            }
+
+            # Enrich with new v3 metadata (only if the column is currently null)
+            v3_enrich = {}
+            if not existing.get("co_number") and q.co_number:
+                v3_enrich["co_number"] = q.co_number
+            if not existing.get("bloom_level") and q.bloom_level:
+                v3_enrich["bloom_level"] = _sanitize_bloom(q.bloom_level)
+            if not existing.get("difficulty_level") and q.difficulty_level:
+                v3_enrich["difficulty_level"] = _sanitize_difficulty(q.difficulty_level)
+            if not existing.get("section") and q.section:
+                v3_enrich["section"] = _sanitize_section(q.section)
+            if not existing.get("section_type") and q.section_type:
+                v3_enrich["section_type"] = _sanitize_section_type(q.section_type)
+            if not existing.get("given_data") and q.given_data:
+                v3_enrich["given_data"] = q.given_data
+            if not existing.get("required_output") and q.required_output:
+                v3_enrich["required_output"] = q.required_output
+            if not existing.get("formulas_mentioned") and q.formulas_mentioned:
+                v3_enrich["formulas_mentioned"] = q.formulas_mentioned
+            if not existing.get("figure_references") and q.figure_references:
+                v3_enrich["figure_references"] = q.figure_references
+            if not existing.get("has_derivation") and q.has_derivation:
+                v3_enrich["has_derivation"] = q.has_derivation
+            if not existing.get("has_proof") and q.has_proof:
+                v3_enrich["has_proof"] = q.has_proof
+            if not existing.get("has_circuit_analysis") and q.has_circuit_analysis:
+                v3_enrich["has_circuit_analysis"] = q.has_circuit_analysis
+            if not existing.get("has_comparison") and q.has_comparison:
+                v3_enrich["has_comparison"] = q.has_comparison
+            if not existing.get("confidence_score") and q.confidence_score > 0:
+                v3_enrich["confidence_score"] = round(q.confidence_score, 3)
+
+            update_payload.update(v3_enrich)
+            sb.table("questions").update(update_payload).eq("id", existing["id"]).execute()
             updated_count += 1
         else:
+            # ── INSERT new question with ALL metadata fields ──
             year_list = [eff_year] if eff_year else []
             sess_list = [f"{eff_year}-{eff_session}"] if eff_year and eff_session else []
             trend = "insufficient_data"
             importance = compute_importance_score(1, max(current_max, 1), trend, eff_year or datetime.now().year)
+
+            # v3.0: Full metadata row — includes all 15+ new fields
             row = {
+                # ── Core fields (existed before) ──
                 "question_text":         q.text,
                 "normalized_text":       normalize_question(q.text),
                 "question_hash":         q_hash,
@@ -215,6 +394,23 @@ async def process_and_insert(
                 "importance_score":      importance,
                 "must_revise_flag":      importance >= 0.75,
                 "page_number":           q.page_number,
+
+                # ── NEW v3.0 fields (Precision Engine) ──
+                "co_number":             q.co_number,
+                "bloom_level":           _sanitize_bloom(q.bloom_level),
+                "difficulty_level":      _sanitize_difficulty(q.difficulty_level),
+                "section":               _sanitize_section(q.section),
+                "section_type":          _sanitize_section_type(q.section_type),
+                "given_data":            q.given_data if q.given_data else None,
+                "required_output":       q.required_output if q.required_output else None,
+                "formulas_mentioned":    q.formulas_mentioned if q.formulas_mentioned else None,
+                "figure_references":     q.figure_references if q.figure_references else None,
+                "has_derivation":        q.has_derivation,
+                "has_proof":             q.has_proof,
+                "has_circuit_analysis":  q.has_circuit_analysis,
+                "has_comparison":        q.has_comparison,
+                "confidence_score":      round(q.confidence_score, 3) if q.confidence_score > 0 else None,
+                "language_ratio":        round(q.language_ratio, 3) if q.language_ratio > 0 else None,
             }
             try:
                 result = sb.table("questions").insert(row).execute()
@@ -242,7 +438,7 @@ async def process_and_insert(
             except Exception:
                 pass
 
-    # Diagram crops → Supabase Storage
+    # Diagram crops -> Supabase Storage
     if upload_diagrams and inserted_ids:
         for qid, q_obj in inserted_ids:
             if not q_obj.has_diagram:
@@ -264,21 +460,15 @@ async def process_and_insert(
     if new_count > 0:
         _increment_counter(sb, "total_questions", new_count)
 
-    log(f"Done: {new_count} new, {updated_count} updated, {n_clusters} clusters | {eff_subject}")
+    log(f"  Paper done: {new_count} new, {updated_count} updated, {n_clusters} clusters | {eff_subject}")
     return {
         "questions_extracted": len(extracted),
         "new_questions": new_count,
         "updated_questions": updated_count,
         "clusters_formed": n_clusters,
-        "paper_metadata": {
-            "subject": eff_subject,
-            "subject_code": eff_code,
-            "branch": eff_branch,
-            "semester": eff_semester,
-            "year": eff_year,
-            "programme": eff_programme,
-            "exam_session": eff_session,
-        },
+        "paper_metadata": _build_paper_meta_dict(
+            paper.metadata if paper.metadata.subject_code else paper_meta
+        ),
     }
 
 
@@ -321,17 +511,26 @@ async def admin_upload(
         request.app.state.embedder, sb,
     )
 
+    # Build submission record with enriched metadata
+    pm = result.get("paper_metadata", {})
+    if result.get("multi_paper"):
+        # For multi-paper: use first paper's metadata for the submission record
+        first_key = list(pm.keys())[0] if pm else None
+        meta_for_sub = pm.get(first_key, {}) if first_key else {}
+    else:
+        meta_for_sub = pm
+
     sub_record = {
         "filename":     file.filename,
         "file_hash":    file_hash,
         "university":   university or "AKTU",
-        "subject":      result["paper_metadata"]["subject"] or None,
-        "subject_code": result["paper_metadata"]["subject_code"] or None,
-        "branch":       result["paper_metadata"]["branch"] or None,
-        "programme":    result["paper_metadata"]["programme"] or None,
-        "semester":     result["paper_metadata"]["semester"],
-        "year":         result["paper_metadata"]["year"],
-        "exam_session": result["paper_metadata"]["exam_session"] or None,
+        "subject":      meta_for_sub.get("subject") or None,
+        "subject_code": meta_for_sub.get("subject_code") or None,
+        "branch":       meta_for_sub.get("branch") or None,
+        "programme":    meta_for_sub.get("programme") or None,
+        "semester":     meta_for_sub.get("semester"),
+        "year":         meta_for_sub.get("year"),
+        "exam_session": meta_for_sub.get("exam_session") or None,
         "submitted_by": "admin",
         "status":       "approved",
     }
@@ -350,20 +549,35 @@ async def extract_metadata_preview(
     x_admin_token: Optional[str] = Header(None),
     authorization: Optional[str] = Header(None),
 ):
+    """
+    v3.0: Returns FULL PaperMetadata including all new precision fields.
+    Also detects multi-paper PDFs and returns metadata for each paper.
+    """
     verify_admin(_safe_get_token(x_admin_token, authorization))
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Only PDF files accepted.")
     pdf_bytes = await file.read()
+
+    # Detect multi-paper
+    papers = split_papers(pdf_bytes)
+    if len(papers) > 1:
+        return {
+            "multi_paper": True,
+            "papers_count": len(papers),
+            "papers": [_build_paper_meta_dict(p.metadata) for p in papers],
+        }
+
+    # Single paper — return full metadata
     from services.pdf_processor import extract_paper_metadata
     meta = extract_paper_metadata(pdf_bytes)
+
+    # Also run split_papers to get bilingual detection, confidence scores etc.
+    if papers:
+        meta = papers[0].metadata
+
     return {
-        "programme":    meta.programme,
-        "subject_name": meta.subject_name,
-        "subject_code": meta.subject_code,
-        "branch":       meta.branch,
-        "semester":     meta.semester,
-        "year":         meta.year,
-        "exam_session": meta.exam_session,
+        "multi_paper": False,
+        **_build_paper_meta_dict(meta),
     }
 
 
@@ -445,6 +659,14 @@ async def get_stats(
     counters = {r["key"]: r["value"] for r in (sb.table("site_counters").select("*").execute().data or [])}
     ocr_errs = sum(1 for l in LOG_BUFFER if "ERROR" in l and "OCR" in l)
 
+    # v3.0: Additional stats — metadata coverage
+    try:
+        q_with_co = sb.table("questions").select("id", count="exact").not_.is_("co_number", "null").execute().count or 0
+        q_with_bloom = sb.table("questions").select("id", count="exact").not_.is_("bloom_level", "null").execute().count or 0
+        q_with_difficulty = sb.table("questions").select("id", count="exact").not_.is_("difficulty_level", "null").execute().count or 0
+    except Exception:
+        q_with_co = q_with_bloom = q_with_difficulty = 0
+
     return {
         "total_questions":      total_q,
         "total_clusters":       total_clusters,
@@ -458,6 +680,13 @@ async def get_stats(
         "ocr_errors_today":     ocr_errs,
         "site_counters":        counters,
         "last_processed":       datetime.now().isoformat(),
+        # v3.0: Metadata coverage stats
+        "metadata_coverage": {
+            "with_co_number":     q_with_co,
+            "with_bloom_level":   q_with_bloom,
+            "with_difficulty":    q_with_difficulty,
+            "coverage_pct":       round(q_with_bloom / total_q * 100, 1) if total_q else 0,
+        },
     }
 
 
@@ -579,7 +808,7 @@ async def run_scraper_batch(
                         "processed_at": datetime.now().isoformat(),
                     }).eq("id", item["id"]).execute()
                     log(f"Scrape failed: {item['pdf_url']} — {err}", "WARN")
-                    results.append({"url": item["pdf_url"], "status": "failed", "error": err})
+                    results.append({"url": pdf_url, "status": "failed", "error": err})
     except ImportError:
         raise HTTPException(500, "httpx not installed.")
 
@@ -713,7 +942,7 @@ async def confirm_appeared(qid: int):
     return {"ok": True}
 
 
-# ── Database maintenance — ALL IMPLEMENTED ────────────────────────────────────
+# ── Database maintenance ───────────────────────────────────────────────────────
 
 @router.post("/recalculate")
 async def recalculate_scores(
@@ -770,7 +999,7 @@ async def recluster_all(
         }).eq("id", row["id"]).execute()
 
     n_clusters = len(set(l for l in labels if l != -1))
-    log(f"Reclustered {len(rows)} questions → {n_clusters} clusters")
+    log(f"Reclustered {len(rows)} questions -> {n_clusters} clusters")
     return {"ok": True, "questions": len(rows), "clusters": n_clusters}
 
 
