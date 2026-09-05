@@ -1,0 +1,99 @@
+# =============================================================================
+#  AKTU-PYQ extraction  ::  GitHub Actions workflow
+#  Copy this file to:  .github/workflows/extraction.yml   (in your PRIVATE
+#  pipeline repo that contains the PDFs -- see EXTRACTION_GUIDE.md section 3)
+#
+#  RUN IT:  Repo -> Actions tab -> "PYQ Extraction" -> Run workflow
+#           mode: pilot (30 papers, no AI quota)  |  backlog (full shard + DB)
+#
+#  BARRIERS ALREADY HANDLED HERE:
+#   - 6h job cap        -> timeout-minutes 350 + extractor --soft-deadline 320
+#                          (job ends CLEANLY with checkpoint, never killed raw)
+#   - parallelism       -> --shard/--shards matrix (run several dispatches at once)
+#   - secret safety     -> keys only via GitHub Secrets, never in code
+#   - crash/timeout     -> extract_state.json resumes where it left off
+#   - artifacts         -> outbox/parsed/state/diagrams uploaded even on failure
+#   - 429 rate limits   -> extractor backs off exponentially (Retry-After aware)
+# =============================================================================
+name: PYQ Extraction
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "pilot = 30 papers Tier-1 only (no AI quota) | backlog = full run"
+        required: true
+        default: "pilot"
+        type: choice
+        options: [pilot, backlog]
+      shard:
+        description: "Shard index (0..shards-1)"
+        default: "0"
+      shards:
+        description: "Total shards (papers split N ways)"
+        default: "1"
+      use_ai:
+        description: "backlog only: enable Gemma Tier-2 repair (true/false)"
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+concurrency:
+  group: pyq-extraction
+  cancel-in-progress: false
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system + python deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr
+          pip install --quiet pdfplumber pypdfium2 pillow requests ftfy pytesseract
+
+      - name: Run extractor
+        env:
+          GEMMA_API_KEY: ${{ secrets.GEMMA_API_KEY }}
+          GEMMA_MODEL: ${{ vars.GEMMA_MODEL || 'gemma-4-31B' }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          set -x
+          COMMON="--dir aktu-pyq/unstructured --out extraction_out \
+                  --shard ${{ inputs.shard }} --shards ${{ inputs.shards }} \
+                  --soft-deadline 300"
+          if [ "${{ inputs.mode }}" = "pilot" ]; then
+            python aktu_pyq_extractor.py $COMMON --pilot 30
+          else
+            EXTRA=""
+            [ "${{ inputs.use_ai }}" = "true" ] && EXTRA="--ai"
+            python aktu_pyq_extractor.py $COMMON $EXTRA --db
+          fi
+
+      - name: Print summary
+        if: always()
+        run: |
+          echo "## Shard ${{ inputs.shard }} result" >> $GITHUB_STEP_SUMMARY
+          tail -5 extraction_out/*.log 2>/dev/null || true
+          wc -l extraction_out/outbox.jsonl 2>/dev/null || true
+
+      - name: Upload artifacts (always, even on failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: extraction-shard-${{ inputs.shard }}
+          path: |
+            extraction_out/outbox.jsonl
+            extraction_out/extract_state.json
+            extraction_out/parsed/
+            extraction_out/diagrams/
+          retention-days: 30
+          if-no-files-found: warn
